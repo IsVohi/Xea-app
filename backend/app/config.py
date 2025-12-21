@@ -6,6 +6,7 @@ Application settings loaded from environment variables.
 
 import os
 from functools import lru_cache
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -31,6 +32,19 @@ class Settings(BaseSettings):
     # Application settings
     debug: bool = True
     log_level: str = "INFO"
+    
+    # Miner orchestration settings
+    miner_count: int = 5
+    miner_quorum: int = 3
+    miner_timeout_seconds: int = 12
+    max_retries: int = 3
+    
+    # Mock miner settings (for local development)
+    mock_miner_url: str = "http://localhost:8001"
+    use_mock_miners: bool = True
+    
+    # Data directories
+    data_dir: str = "/data"
 
     class Config:
         env_file = ".env"

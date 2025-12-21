@@ -1,278 +1,432 @@
 """
 Xea Governance Oracle - End-to-End Mock Tests
 
-End-to-end tests using mock miners.
+Full pipeline tests using mock miners.
 """
 
+import asyncio
+import json
 import pytest
 import time
+from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
+import tempfile
 
-# Import test utilities
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workers"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-
-
+# Sample proposal for testing
 SAMPLE_PROPOSAL = """
-# Proposal: Treasury Allocation
+# Proposal: Treasury Allocation for Developer Grants
 
 ## Summary
-This proposal requests 50,000 USDC from the DAO treasury.
+
+This proposal requests 50,000 USDC from the DAO treasury to fund developer grants for Q1 2025.
 
 ## Background
-The treasury currently holds 500,000 USDC.
-This represents 10% of total funds.
 
-## Timeline
-- Applications open: January 15, 2025
-- Deadline: February 15, 2025
+The DAO treasury currently holds approximately 500,000 USDC. This allocation represents 10% of total treasury funds. The treasury address is 0x742d35Cc6634C0532925a3b844Bc9e7595f5bC12.
+
+## Specification
+
+### Grant Distribution
+- Smart Contract Development: 20,000 USDC
+- Frontend Development: 15,000 USDC
+- Documentation: 10,000 USDC
+- Security Audits: 5,000 USDC
+
+### Timeline
+- Grant applications open: January 15, 2025
+- Application deadline: February 15, 2025
+
+### Oversight
+A 3-of-5 multisig will manage disbursements.
+
+## Rationale
+
+Developer grants have historically provided 3x ROI. The previous grant program funded 12 projects.
+More details at https://dao.example.org/grants
 """
 
 
-class TestE2EMockPipeline:
-    """End-to-end tests with mock miners."""
+class TestMockMinerClient:
+    """Test MockMinerClient behavior."""
 
-    def test_mock_miner_response_structure(self):
-        """Mock miner should return valid response structure."""
-        from mock_miner import MockMiner
+    def test_creates_deterministic_embedding(self):
+        """MockMiner should create deterministic embeddings."""
+        from app.miner_client import MockMinerClient
         
-        miner = MockMiner()
-        response = miner.validate_claim(
-            claim_id="claim_001",
-            claim_text="The treasury holds 500,000 USDC",
-            proposal_context=SAMPLE_PROPOSAL,
+        miner1 = MockMinerClient(miner_id="test", seed=42)
+        miner2 = MockMinerClient(miner_id="test", seed=42)
+        
+        emb1 = miner1._compute_deterministic_embedding("test text")
+        emb2 = miner2._compute_deterministic_embedding("test text")
+        
+        assert emb1 == emb2
+        assert len(emb1) == 64
+
+    def test_different_text_different_embedding(self):
+        """Different text should produce different embeddings."""
+        from app.miner_client import MockMinerClient
+        
+        miner = MockMinerClient(seed=42)
+        
+        emb1 = miner._compute_deterministic_embedding("text one")
+        emb2 = miner._compute_deterministic_embedding("text two")
+        
+        assert emb1 != emb2
+
+    def test_numeric_claims_bias_supported(self):
+        """Claims with canonical numbers should bias toward 'supported'."""
+        from app.miner_client import MockMinerClient
+        from app.schemas import Claim, ClaimCanonical
+        
+        miner = MockMinerClient(seed=42)
+        
+        claim = Claim(
+            id="c1",
+            text="The treasury holds 500,000 USDC",
+            paragraph_index=0,
+            char_range=[0, 30],
+            type="numeric",
+            canonical=ClaimCanonical(numbers=[500000.0], addresses=[], urls=[]),
         )
         
-        # Check required fields
-        assert "miner_id" in response
-        assert "claim_id" in response
-        assert "verdict" in response
-        assert "rationale" in response
-        assert "evidence_links" in response
-        assert "scores" in response
-        
-        # Check verdict is valid
-        assert response["verdict"] in ["verified", "refuted", "unverifiable", "partial"]
-        
-        # Check scores
-        scores = response["scores"]
-        assert "accuracy" in scores
-        assert "omission_risk" in scores
-        assert "evidence_quality" in scores
-        assert "governance_relevance" in scores
-        assert "composite" in scores
-        
-        # Check score ranges
-        for key, value in scores.items():
-            assert 0 <= value <= 1, f"{key} score out of range"
-
-    def test_mock_miner_pool_creation(self):
-        """Should create pool of miners with unique IDs."""
-        from mock_miner import create_mock_miner_pool
-        
-        pool = create_mock_miner_pool(count=5)
-        
-        assert len(pool) == 5
-        
-        miner_ids = set()
-        for miner in pool:
-            miner_ids.add(miner.config.miner_id)
-        
-        assert len(miner_ids) == 5  # All unique
-
-    def test_mock_validation_determinism(self):
-        """Same claim should produce consistent verdict type."""
-        from mock_miner import MockMiner, MockMinerConfig
-        
-        # Use fixed seed for determinism
-        config = MockMinerConfig(miner_id="test_miner", failure_rate=0.0)
-        miner = MockMiner(config)
-        
-        claim_text = "The treasury holds exactly 500,000 USDC"
-        
-        # Run multiple times
+        # Run multiple times to check bias
         verdicts = []
-        for _ in range(3):
-            response = miner.validate_claim(
-                claim_id="claim_001",
-                claim_text=claim_text,
-                proposal_context=SAMPLE_PROPOSAL,
-            )
-            verdicts.append(response["verdict"])
+        for i in range(10):
+            miner._rng.seed(42 + i)
+            verdict = miner._determine_verdict(claim)
+            verdicts.append(verdict)
         
-        # All verdicts should be the same for same claim
-        assert len(set(verdicts)) == 1
+        # Should be mostly supported
+        supported_count = verdicts.count("supported")
+        assert supported_count >= 6  # At least 60% supported
 
-    def test_pouw_composite_matches_weights(self):
-        """Composite score should match weighted calculation."""
-        from mock_miner import MockMiner, MockMinerConfig
-        from app.aggregator import calculate_pouw_composite
+    @pytest.mark.asyncio
+    async def test_validate_claim_returns_miner_response(self):
+        """validate_claim should return proper MinerResponse."""
+        from app.miner_client import MockMinerClient
+        from app.schemas import Claim, ClaimCanonical, MinerResponse
         
-        config = MockMinerConfig(failure_rate=0.0)
-        miner = MockMiner(config)
+        miner = MockMinerClient(miner_id="test_miner", seed=42)
         
-        response = miner.validate_claim(
-            claim_id="claim_001",
-            claim_text="Test claim",
-            proposal_context="Test",
+        claim = Claim(
+            id="c1",
+            text="Test claim",
+            paragraph_index=0,
+            char_range=[0, 10],
+            type="factual",
+            canonical=ClaimCanonical(numbers=[], addresses=[], urls=[]),
         )
         
-        scores = response["scores"]
-        expected_composite = calculate_pouw_composite({
-            "accuracy": scores["accuracy"],
-            "omission_risk": scores["omission_risk"],
-            "evidence_quality": scores["evidence_quality"],
-            "governance_relevance": scores["governance_relevance"],
-        })
+        response = await miner.validate_claim(claim, "sha256:abc123")
         
-        # Should be close (miner calculates same way)
-        assert abs(scores["composite"] - expected_composite) < 0.01
+        assert isinstance(response, MinerResponse)
+        assert response.miner_id == "test_miner"
+        assert response.claim_id == "c1"
+        assert response.verdict in ["verified", "refuted", "unverifiable", "partial"]
+        assert len(response.rationale) > 0
+        assert response.scores.accuracy >= 0
+        assert response.scores.composite >= 0
+        assert len(response.embedding) == 64
 
 
-class TestE2EWorkflow:
-    """Test the full workflow with mocked dependencies."""
+class TestMinerClientFactory:
+    """Test miner client factory."""
 
-    def test_ingest_hash_stability(self):
-        """Ingest should produce stable hashes."""
-        from app.ingest import compute_proposal_hash, canonicalize_text
+    def test_creates_correct_number_of_miners(self):
+        """Factory should create requested number of miners."""
+        from app.miner_client import create_miner_clients
         
-        # Hash same content multiple times
-        hashes = []
-        for _ in range(3):
-            canonical = canonicalize_text(SAMPLE_PROPOSAL)
-            hash_val = compute_proposal_hash(canonical)
-            hashes.append(hash_val)
-        
-        # All should be identical
-        assert len(set(hashes)) == 1
-        assert hashes[0].startswith("sha256:")
+        miners = create_miner_clients(count=5, use_mock=True)
+        assert len(miners) == 5
 
-    def test_claim_count_reasonable(self):
-        """Proposal should produce reasonable claim count."""
-        # Mock claim extraction - actual implementation uses AI
-        mock_claims = [
-            {"id": "claim_001", "text": "requests 50,000 USDC"},
-            {"id": "claim_002", "text": "treasury holds 500,000 USDC"},
-            {"id": "claim_003", "text": "represents 10% of total funds"},
-            {"id": "claim_004", "text": "Applications open January 15"},
-            {"id": "claim_005", "text": "Deadline February 15"},
-            {"id": "claim_006", "text": "from the DAO treasury"},
-        ]
+    def test_miners_have_unique_ids(self):
+        """Each miner should have unique ID."""
+        from app.miner_client import create_miner_clients
         
-        assert 6 <= len(mock_claims) <= 12
+        miners = create_miner_clients(count=5, use_mock=True)
+        ids = [m.get_miner_id() for m in miners]
+        assert len(set(ids)) == 5
 
-    def test_validation_fanout(self):
-        """Validation should fan out to multiple miners."""
-        from mock_miner import create_mock_miner_pool
+
+class TestBuildMinerPayload:
+    """Test miner request payload building."""
+
+    def test_builds_correct_payload_structure(self):
+        """Payload should match expected structure."""
+        from app.miner_client import build_miner_request_payload
+        from app.schemas import Claim, ClaimCanonical
         
-        miners = create_mock_miner_pool(count=5)
-        claim = {
-            "id": "claim_001",
-            "text": "The treasury holds 500,000 USDC",
+        claim = Claim(
+            id="c1",
+            text="Test claim",
+            paragraph_index=0,
+            char_range=[0, 10],
+            type="factual",
+            canonical=ClaimCanonical(numbers=[], addresses=[], urls=[]),
+        )
+        
+        payload = build_miner_request_payload(claim, "sha256:abc123", demo_mode=True)
+        
+        assert "request_id" in payload
+        assert payload["proposal_hash"] == "sha256:abc123"
+        assert payload["claim"]["id"] == "c1"
+        assert payload["claim"]["text"] == "Test claim"
+        assert payload["claim"]["type"] == "factual"
+        assert len(payload["tasks"]) == 1
+        assert "rubric" in payload["tasks"][0]
+        assert payload["meta"]["demo_mode"] is True
+
+
+class TestValidationPipeline:
+    """Test full validation pipeline with mock miners."""
+
+    @pytest.fixture
+    def temp_dirs(self, tmp_path):
+        """Create temporary data directories."""
+        claims_dir = tmp_path / "claims"
+        jobs_dir = tmp_path / "jobs"
+        responses_dir = tmp_path / "responses"
+        claims_dir.mkdir()
+        jobs_dir.mkdir()
+        responses_dir.mkdir()
+        return {
+            "claims": claims_dir,
+            "jobs": jobs_dir,
+            "responses": responses_dir,
+            "base": tmp_path,
+        }
+
+    @pytest.mark.asyncio
+    async def test_ingest_creates_claims(self, temp_dirs):
+        """Ingesting proposal should create claims."""
+        from app.ingest import process_ingest
+        from app.schemas import IngestRequest
+        
+        with patch('app.ingest.get_data_dir', return_value=temp_dirs["claims"]):
+            request = IngestRequest(text=SAMPLE_PROPOSAL)
+            response = await process_ingest(request)
+        
+        assert response.proposal_hash.startswith("sha256:")
+        assert len(response.claims) >= 5
+        
+        # Claims should have proper structure
+        for claim in response.claims:
+            assert claim.id.startswith("c")
+            assert len(claim.text) > 0
+            assert claim.type in ["factual", "numeric", "normative"]
+
+    @pytest.mark.asyncio
+    async def test_validate_claims_job_processes_all_claims(self, temp_dirs):
+        """validate_claims_job should process all claims."""
+        from app.ingest import process_ingest
+        from app.schemas import IngestRequest
+        from app.workers import validate_claims_job, job_state, JobStateManager
+        from app.config import settings
+        
+        # Override settings for faster test
+        original_timeout = settings.miner_timeout_seconds
+        original_quorum = settings.miner_quorum
+        original_count = settings.miner_count
+        settings.miner_timeout_seconds = 5
+        settings.miner_quorum = 2
+        settings.miner_count = 3
+        settings.use_mock_miners = True
+        
+        # Mock Redis entirely
+        mock_redis = MagicMock()
+        mock_redis.hset = MagicMock()
+        mock_redis.hgetall = MagicMock(return_value={})
+        mock_redis.expire = MagicMock()
+        
+        try:
+            # Patch data directories and Redis
+            with patch('app.ingest.get_data_dir', return_value=temp_dirs["claims"]):
+                with patch('app.workers.get_jobs_dir', return_value=temp_dirs["jobs"]):
+                    with patch('app.workers.get_responses_dir', return_value=temp_dirs["responses"]):
+                        with patch.object(job_state, '_redis', mock_redis):
+                            # Ingest proposal
+                            request = IngestRequest(text=SAMPLE_PROPOSAL)
+                            ingest_response = await process_ingest(request)
+                            
+                            # Validate
+                            result = validate_claims_job(ingest_response.proposal_hash)
+        finally:
+            settings.miner_timeout_seconds = original_timeout
+            settings.miner_quorum = original_quorum
+            settings.miner_count = original_count
+        
+        assert result["status"] == "completed"
+        assert "responses" in result
+        
+        # Each claim should have responses
+        for claim in ingest_response.claims:
+            assert claim.id in result["responses"]
+            assert len(result["responses"][claim.id]) >= 2  # At least quorum
+
+    @pytest.mark.asyncio
+    async def test_responses_match_schema(self, temp_dirs):
+        """Miner responses should match MinerResponse schema."""
+        from app.ingest import process_ingest
+        from app.schemas import IngestRequest
+        from app.workers import validate_claims_job, job_state
+        from app.config import settings
+        
+        settings.miner_timeout_seconds = 5
+        settings.miner_quorum = 2
+        settings.miner_count = 3
+        settings.use_mock_miners = True
+        
+        # Mock Redis
+        mock_redis = MagicMock()
+        mock_redis.hset = MagicMock()
+        mock_redis.hgetall = MagicMock(return_value={})
+        mock_redis.expire = MagicMock()
+        
+        with patch('app.ingest.get_data_dir', return_value=temp_dirs["claims"]):
+            with patch('app.workers.get_jobs_dir', return_value=temp_dirs["jobs"]):
+                with patch('app.workers.get_responses_dir', return_value=temp_dirs["responses"]):
+                    with patch.object(job_state, '_redis', mock_redis):
+                        request = IngestRequest(text=SAMPLE_PROPOSAL)
+                        ingest_response = await process_ingest(request)
+                        result = validate_claims_job(ingest_response.proposal_hash)
+        
+        # Check response schema
+        for claim_id, responses in result["responses"].items():
+            for resp in responses:
+                assert "miner_id" in resp
+                assert "claim_id" in resp
+                assert "verdict" in resp
+                assert resp["verdict"] in ["verified", "refuted", "unverifiable", "partial"]
+                assert "rationale" in resp
+                assert "scores" in resp
+                assert "accuracy" in resp["scores"]
+                assert "omission_risk" in resp["scores"]
+                assert "evidence_quality" in resp["scores"]
+                assert "governance_relevance" in resp["scores"]
+                assert "composite" in resp["scores"]
+
+    @pytest.mark.asyncio
+    async def test_responses_persisted_to_file(self, temp_dirs):
+        """Raw responses should be persisted to JSON file."""
+        from app.ingest import process_ingest
+        from app.schemas import IngestRequest
+        from app.workers import validate_claims_job, job_state
+        from app.config import settings
+        
+        settings.miner_timeout_seconds = 5
+        settings.miner_quorum = 2
+        settings.miner_count = 3
+        settings.use_mock_miners = True
+        
+        # Mock Redis
+        mock_redis = MagicMock()
+        mock_redis.hset = MagicMock()
+        mock_redis.hgetall = MagicMock(return_value={})
+        mock_redis.expire = MagicMock()
+        
+        with patch('app.ingest.get_data_dir', return_value=temp_dirs["claims"]):
+            with patch('app.workers.get_jobs_dir', return_value=temp_dirs["jobs"]):
+                with patch('app.workers.get_responses_dir', return_value=temp_dirs["responses"]):
+                    with patch.object(job_state, '_redis', mock_redis):
+                        request = IngestRequest(text=SAMPLE_PROPOSAL)
+                        ingest_response = await process_ingest(request)
+                        result = validate_claims_job(ingest_response.proposal_hash)
+        
+        # Check files exist
+        job_files = list(temp_dirs["jobs"].glob("*.json"))
+        response_files = list(temp_dirs["responses"].glob("*.json"))
+        
+        assert len(job_files) >= 1
+        assert len(response_files) >= 1
+        
+        # Load and validate response file
+        with open(response_files[0]) as f:
+            raw_data = json.load(f)
+        
+        assert "job_id" in raw_data
+        assert "responses" in raw_data
+        assert len(raw_data["responses"]) > 0
+
+
+class TestCortensorClientScaffold:
+    """Test CortensorRouterMinerClient scaffold."""
+
+    def test_builds_headers_with_api_key(self):
+        """Should include auth header when API key provided."""
+        from app.miner_client import CortensorRouterMinerClient
+        
+        client = CortensorRouterMinerClient(api_key="test-key")
+        headers = client._build_headers()
+        
+        assert "Authorization" in headers
+        assert headers["Authorization"] == "Bearer test-key"
+
+    def test_falls_back_to_mock_when_no_url(self):
+        """Should fall back to mock behavior when router URL not configured."""
+        from app.miner_client import CortensorRouterMinerClient
+        from app.schemas import Claim, ClaimCanonical
+        
+        client = CortensorRouterMinerClient(router_url="")
+        
+        claim = Claim(
+            id="c1",
+            text="Test",
+            paragraph_index=0,
+            char_range=[0, 4],
+            type="factual",
+            canonical=ClaimCanonical(numbers=[], addresses=[], urls=[]),
+        )
+        
+        # Should not raise - falls back to mock
+        loop = asyncio.new_event_loop()
+        try:
+            response = loop.run_until_complete(client.validate_claim(claim, "sha256:test"))
+            assert response.miner_id is not None
+        finally:
+            loop.close()
+
+
+class TestJobStateManager:
+    """Test JobStateManager functionality."""
+
+    def test_creates_job(self):
+        """Should create job record."""
+        from app.workers import JobStateManager
+        from unittest.mock import MagicMock
+        
+        manager = JobStateManager()
+        manager._redis = MagicMock()
+        manager._redis.hset = MagicMock()
+        manager._redis.expire = MagicMock()
+        
+        with patch('app.workers.get_jobs_dir', return_value=Path(tempfile.mkdtemp())):
+            job = manager.create_job("job_123", "sha256:abc", [{"id": "c1"}])
+        
+        assert job["job_id"] == "job_123"
+        assert job["proposal_hash"] == "sha256:abc"
+        assert job["status"] == "queued"
+        assert job["claims_total"] == 1
+
+    def test_parses_job_data(self):
+        """Should parse Redis data correctly."""
+        from app.workers import JobStateManager
+        
+        manager = JobStateManager()
+        
+        data = {
+            "job_id": "job_123",
+            "status": "running",
+            "claims_total": "5",
+            "claims_validated": "3",
+            "miners_contacted": "15",
+            "miners_responded": "9",
+            "claim_ids": '["c1","c2","c3"]',
+            "responses": '{"c1":[]}',
         }
         
-        responses = []
-        for miner in miners:
-            try:
-                response = miner.validate_claim(
-                    claim_id=claim["id"],
-                    claim_text=claim["text"],
-                    proposal_context=SAMPLE_PROPOSAL,
-                )
-                responses.append(response)
-            except Exception:
-                pass  # Some miners may fail
+        parsed = manager._parse_job_data(data)
         
-        # At least some miners should respond
-        assert len(responses) >= 3
-
-    def test_aggregation_produces_metrics(self):
-        """Aggregation should produce valid metrics."""
-        from mock_miner import create_mock_miner_pool
-        from app.aggregator import calculate_poi_agreement, calculate_pouw_composite
-        from app.schemas import MinerResponse, MinerScores
-        
-        # Generate responses from mock miners
-        miners = create_mock_miner_pool(count=5)
-        claim_id = "claim_001"
-        
-        responses = []
-        for miner in miners:
-            raw = miner.validate_claim(
-                claim_id=claim_id,
-                claim_text="Test claim",
-                proposal_context="Test",
-            )
-            scores = MinerScores(**raw["scores"])
-            responses.append(MinerResponse(
-                miner_id=raw["miner_id"],
-                claim_id=raw["claim_id"],
-                verdict=raw["verdict"],
-                rationale=raw["rationale"],
-                evidence_links=raw["evidence_links"],
-                scores=scores,
-            ))
-        
-        # Calculate PoI
-        poi = calculate_poi_agreement(responses, claim_id)
-        assert 0 <= poi <= 1
-        
-        # Calculate average PoUW
-        pouw_scores = [r.scores.composite for r in responses]
-        avg_pouw = sum(pouw_scores) / len(pouw_scores)
-        assert 0 <= avg_pouw <= 1
-
-
-class TestE2EValidation:
-    """Validate end-to-end flow matches acceptance criteria."""
-
-    def test_acceptance_hash_format(self):
-        """Hash format matches spec."""
-        from app.ingest import compute_proposal_hash, canonicalize_text
-        
-        hash_val = compute_proposal_hash(canonicalize_text(SAMPLE_PROPOSAL))
-        
-        # Format: sha256:<64 hex chars>
-        assert hash_val.startswith("sha256:")
-        hex_part = hash_val[7:]
-        assert len(hex_part) == 64
-        assert all(c in "0123456789abcdef" for c in hex_part)
-
-    def test_acceptance_verdict_values(self):
-        """Verdict values match spec."""
-        valid_verdicts = {"verified", "refuted", "unverifiable", "partial"}
-        
-        from mock_miner import create_mock_miner_pool
-        
-        miners = create_mock_miner_pool(count=10)
-        verdicts_seen = set()
-        
-        for i, miner in enumerate(miners):
-            response = miner.validate_claim(
-                claim_id=f"claim_{i:03d}",
-                claim_text=f"Test claim {i}",
-                proposal_context="Test",
-            )
-            verdicts_seen.add(response["verdict"])
-        
-        # All seen verdicts should be valid
-        assert verdicts_seen.issubset(valid_verdicts)
-
-    def test_acceptance_score_ranges(self):
-        """All scores should be in [0, 1] range."""
-        from mock_miner import MockMiner
-        
-        miner = MockMiner()
-        
-        for i in range(10):
-            response = miner.validate_claim(
-                claim_id=f"claim_{i:03d}",
-                claim_text=f"Test claim {i}",
-                proposal_context="Test",
-            )
-            
-            scores = response["scores"]
-            for key, value in scores.items():
-                assert 0 <= value <= 1, f"Score {key}={value} out of range"
+        assert parsed["claims_total"] == 5
+        assert parsed["claims_validated"] == 3
+        assert parsed["claim_ids"] == ["c1", "c2", "c3"]
+        assert parsed["responses"] == {"c1": []}
