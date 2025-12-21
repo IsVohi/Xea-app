@@ -5,7 +5,7 @@ Request/Response schemas for API endpoints.
 """
 
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, List
 from pydantic import BaseModel, Field
 
 
@@ -13,15 +13,46 @@ from pydantic import BaseModel, Field
 # Claim Schemas
 # ============================================================================
 
+class ClaimCanonical(BaseModel):
+    """Canonical extracted values from a claim."""
+    
+    numbers: List[float] = Field(default_factory=list, description="Normalized numeric values (e.g., 10% -> 0.10)")
+    addresses: List[str] = Field(default_factory=list, description="Normalized ETH addresses (lowercased)")
+    urls: List[str] = Field(default_factory=list, description="Normalized URLs")
+
+
 class Claim(BaseModel):
     """Atomic claim extracted from a proposal."""
 
-    id: str = Field(..., description="Unique identifier for the claim", pattern=r"^claim_\d{3,}$")
+    id: str = Field(..., description="Claim identifier (c1, c2, ...)")
     text: str = Field(..., description="The verbatim claim text extracted from the proposal")
     paragraph_index: int = Field(..., ge=0, description="Zero-indexed paragraph number")
-    char_range: tuple[int, int] = Field(..., description="Character start and end positions")
-    type: Literal["factual", "mathematical", "temporal", "comparative", "procedural", "conditional"]
-    canonical: str = Field(..., description="Normalized identifier for deduplication")
+    char_range: List[int] = Field(..., description="Character start and end positions [start, end]")
+    type: Literal["factual", "normative", "numeric"] = Field(..., description="Claim type classification")
+    canonical: ClaimCanonical = Field(default_factory=ClaimCanonical, description="Canonicalized values")
+
+
+# ============================================================================
+# Ingest Schemas
+# ============================================================================
+
+class IngestRequest(BaseModel):
+    """Request to ingest a proposal."""
+
+    url: Optional[str] = Field(None, description="URL of the proposal to ingest")
+    text: Optional[str] = Field(None, description="Raw text of the proposal")
+
+    def model_post_init(self, __context):
+        if not self.url and not self.text:
+            raise ValueError("Either 'url' or 'text' must be provided")
+
+
+class IngestResponse(BaseModel):
+    """Response from proposal ingestion."""
+
+    proposal_hash: str = Field(..., description="SHA-256 hash of canonical text with URI")
+    canonical_text: str = Field(..., description="Canonicalized proposal text")
+    claims: List[Claim] = Field(..., description="Extracted atomic claims")
 
 
 # ============================================================================
@@ -45,32 +76,9 @@ class MinerResponse(BaseModel):
     claim_id: str
     verdict: Literal["verified", "refuted", "unverifiable", "partial"]
     rationale: str
-    evidence_links: list[str] = Field(default_factory=list)
-    embedding: Optional[list[float]] = None
+    evidence_links: List[str] = Field(default_factory=list)
+    embedding: Optional[List[float]] = None
     scores: MinerScores
-
-
-# ============================================================================
-# Ingest Schemas
-# ============================================================================
-
-class IngestRequest(BaseModel):
-    """Request to ingest a proposal."""
-
-    url: Optional[str] = Field(None, description="URL of the proposal to ingest")
-    text: Optional[str] = Field(None, description="Raw text of the proposal")
-
-    def model_post_init(self, __context):
-        if not self.url and not self.text:
-            raise ValueError("Either 'url' or 'text' must be provided")
-
-
-class IngestResponse(BaseModel):
-    """Response from proposal ingestion."""
-
-    proposal_hash: str = Field(..., description="SHA-256 hash of canonical text")
-    canonical_text: str = Field(..., description="Canonicalized proposal text")
-    claims: list[Claim] = Field(..., description="Extracted atomic claims")
 
 
 # ============================================================================
@@ -112,7 +120,7 @@ class StatusResponse(BaseModel):
     job_id: str
     status: Literal["queued", "running", "completed", "failed"]
     progress: JobProgress
-    partial_results: list[MinerResponse] = Field(default_factory=list)
+    partial_results: List[MinerResponse] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -147,7 +155,7 @@ class Recommendation(BaseModel):
 
     action: Literal["approve", "reject", "review"]
     confidence: float = Field(..., ge=0, le=1)
-    risk_flags: list[str] = Field(default_factory=list)
+    risk_flags: List[str] = Field(default_factory=list)
     summary: str
 
 
@@ -155,8 +163,8 @@ class EvidenceBundle(BaseModel):
     """Complete evidence bundle with aggregated results."""
 
     proposal_hash: str
-    claims: list[Claim]
-    miners: list[MinerResponse]
+    claims: List[Claim]
+    miners: List[MinerResponse]
     aggregated_metrics: AggregatedMetrics
     recommendation: Recommendation
     ipfs_cid: Optional[str] = None
@@ -189,3 +197,13 @@ class AttestResponse(BaseModel):
     tx_link: Optional[str] = None
     status: Literal["signed", "submitted", "confirmed"]
     created_at: datetime
+
+
+# ============================================================================
+# Claims Edit Schemas
+# ============================================================================
+
+class ClaimsEditRequest(BaseModel):
+    """Request to update claims for a proposal."""
+    
+    claims: List[Claim] = Field(..., description="Updated claims list")

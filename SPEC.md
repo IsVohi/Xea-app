@@ -663,3 +663,120 @@ def test_e2e_pipeline():
 | **Miner** | Decentralized inference node that validates claims |
 | **Evidence Bundle** | Aggregated validation results with signatures |
 | **Attestation** | On-chain commitment to an evidence bundle hash |
+
+---
+
+## 8. LLM Claim Extraction
+
+### 8.1 Claim Extraction Prompt
+
+The following prompt is used verbatim for LLM-based claim extraction in `extract_claims_llm`:
+
+```
+You are a governance claim extractor. Given the canonical proposal text below, extract **only atomic factual and numeric claims** (exclude purely normative sentences). For each claim, produce a JSON entry with these fields:
+
+{
+  "id": "c{n}",
+  "text": "<exact claim text, trimmed>",
+  "paragraph_index": <0-based int>,
+  "char_range": [ <start_char_index>, <end_char_index> ],
+  "type": "factual" | "numeric",
+  "canonical": { "numbers": [<float>], "addresses": [<eth_address>], "urls": [<url>] }
+}
+
+Rules:
+- Split compound sentences into multiple claims when they assert distinct facts.
+- If a sentence contains both a factual statement and a numeric parameter (e.g., "unlock 10% of treasury"), create a single claim with type "numeric" and canonical.numbers = [0.10].
+- Do NOT produce commentary or extra text. Output must be a pure JSON array.
+```
+
+### 8.2 Example Input and Output
+
+**Example Input Excerpt:**
+
+```
+The DAO treasury currently holds 500,000 USDC.
+This proposal requests an allocation of 50,000 USDC, representing 10% of total funds.
+The treasury address is 0x742d35Cc6634C0532925a3b844Bc9e7595f5bC12.
+```
+
+**Expected Claims Output:**
+
+```json
+[
+  {
+    "id": "c1",
+    "text": "The DAO treasury currently holds 500,000 USDC.",
+    "paragraph_index": 0,
+    "char_range": [0, 46],
+    "type": "numeric",
+    "canonical": {
+      "numbers": [500000.0],
+      "addresses": [],
+      "urls": []
+    }
+  },
+  {
+    "id": "c2",
+    "text": "This proposal requests an allocation of 50,000 USDC, representing 10% of total funds.",
+    "paragraph_index": 0,
+    "char_range": [47, 132],
+    "type": "numeric",
+    "canonical": {
+      "numbers": [50000.0, 0.10],
+      "addresses": [],
+      "urls": []
+    }
+  },
+  {
+    "id": "c3",
+    "text": "The treasury address is 0x742d35Cc6634C0532925a3b844Bc9e7595f5bC12.",
+    "paragraph_index": 0,
+    "char_range": [133, 200],
+    "type": "factual",
+    "canonical": {
+      "numbers": [],
+      "addresses": ["0x742d35cc6634c0532925a3b844bc9e7595f5bc12"],
+      "urls": []
+    }
+  }
+]
+```
+
+### 8.3 Numeric Canonicalization Examples
+
+| Input Text | `canonical.numbers` |
+|------------|---------------------|
+| "unlock 10% of treasury" | `[0.10]` |
+| "allocate 50,000 USDC" | `[50000.0]` |
+| "representing 10 percent" | `[0.10]` |
+| "total of 1.5 million tokens" | `[1500000.0]` |
+| "3x ROI" | `[3.0]` |
+| "over the next 30 days" | `[30.0]` |
+
+### 8.4 Address Canonicalization
+
+- All Ethereum addresses are lowercased
+- Format: `0x` followed by 40 hexadecimal characters
+- Example: `0xABCdef1234...` → `0xabcdef1234...`
+
+### 8.5 Updated Claim Schema
+
+The `canonical` field is now an object with structured normalized values:
+
+```json
+{
+  "id": "c1",
+  "text": "The treasury holds 500,000 USDC",
+  "paragraph_index": 0,
+  "char_range": [0, 31],
+  "type": "numeric",
+  "canonical": {
+    "numbers": [500000.0],
+    "addresses": [],
+    "urls": []
+  }
+}
+```
+
+This replaces the previous string-based canonical field for better machine processing.
