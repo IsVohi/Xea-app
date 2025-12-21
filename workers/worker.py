@@ -12,7 +12,7 @@ import logging
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from redis import Redis
-from rq import Worker, Queue, Connection
+from rq import Worker, Queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +33,7 @@ def main():
 
     redis_conn = get_redis_connection()
 
-    # Listen to these queues
+    # Define queues to listen on
     queues = [
         Queue("validation", connection=redis_conn),
         Queue("aggregation", connection=redis_conn),
@@ -41,10 +41,10 @@ def main():
         Queue("default", connection=redis_conn),
     ]
 
-    with Connection(redis_conn):
-        worker = Worker(queues)
-        logger.info(f"Worker listening on queues: {[q.name for q in queues]}")
-        worker.work()
+    # Create and start worker
+    worker = Worker(queues, connection=redis_conn)
+    logger.info(f"Worker listening on queues: {[q.name for q in queues]}")
+    worker.work()
 
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@ COPY frontend/package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy source
+# Copy source (including config files)
 COPY frontend/ .
 
 # Expose port
 EXPOSE 3000
 
-# Default command
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# Default command - run dev server on port 3000
+CMD ["npm", "run", "dev"]
