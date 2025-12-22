@@ -158,10 +158,10 @@ async def update_claims(proposal_hash: str, request: ClaimsEditRequest):
 # Validation Endpoints
 # ============================================================================
 
-def _run_validation_background(proposal_hash: str):
+def _run_validation_background(proposal_hash: str, job_id: str):
     """Background task to run validation."""
     try:
-        validate_claims_job(proposal_hash)
+        validate_claims_job(proposal_hash, job_id=job_id)
     except Exception as e:
         import logging
         logging.error(f"Background validation failed: {e}")
@@ -194,7 +194,7 @@ async def validate_proposal(
     job_state.create_job(job_id, proposal_hash, claims)
     
     # Start background validation
-    background_tasks.add_task(_run_validation_background, proposal_hash)
+    background_tasks.add_task(_run_validation_background, proposal_hash, job_id)
     
     return ValidateResponse(
         job_id=job_id,

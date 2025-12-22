@@ -31,6 +31,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "eth-account>=0.10.0",
     "web3>=6.11.0",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]

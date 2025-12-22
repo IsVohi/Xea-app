@@ -345,12 +345,13 @@ async def _run_validation_async(
     return {"job_id": job_id, "status": "completed", "responses": all_responses}
 
 
-def validate_claims_job(proposal_hash: str) -> dict:
+def validate_claims_job(proposal_hash: str, job_id: str = None) -> dict:
     """
     RQ worker job to validate all claims for a proposal.
     
     Args:
         proposal_hash: Hash of the proposal to validate
+        job_id: Optional existing job ID. If not provided, a new one is generated.
         
     Returns:
         Job result with status and responses
@@ -383,11 +384,15 @@ def validate_claims_job(proposal_hash: str) -> dict:
         logger.error(f"No claims found for proposal: {proposal_hash}")
         return {"error": "No claims found", "proposal_hash": proposal_hash}
     
-    # Generate job ID
-    job_id = generate_job_id()
-    
-    # Create job record
-    job_state.create_job(job_id, proposal_hash, claims_data.get("claims", []))
+    # Use provided job ID or generate new one
+    if not job_id:
+        job_id = generate_job_id()
+        # Create job record only if we generated the ID (new job)
+        job_state.create_job(job_id, proposal_hash, claims_data.get("claims", []))
+    else:
+        # Ensure job exists if ID provided
+        if not job_state.get_job(job_id):
+             job_state.create_job(job_id, proposal_hash, claims_data.get("claims", []))
     
     # Run async validation
     # Handle both sync and async contexts
