@@ -331,6 +331,15 @@ def aggregate_job(
         logger.warning(f"No grouped responses for job: {job_id}")
         return None
     
+    # Load original claims to get text
+    from app.ingest import load_claims
+    original_claims = {}
+    if proposal_hash:
+        claims_data = load_claims(proposal_hash)
+        if claims_data and "claims" in claims_data:
+            for c in claims_data["claims"]:
+                original_claims[c["id"]] = c["text"]
+    
     # Aggregate each claim
     claims_aggregated = []
     all_poi_agreements = []
@@ -339,20 +348,14 @@ def aggregate_job(
     for claim_id in sorted(grouped.keys()):
         responses = grouped[claim_id]
         
-        # Get claim text from first response if available
-        claim_text = ""
-        claim_type = "factual"
-        if responses:
-            # Try to get from original claim data in job
-            if job_data and "claim_ids" in job_data:
-                # Claim text would need to be loaded from claims file
-                pass
+        # Get claim text
+        claim_text = original_claims.get(claim_id, "")
         
         aggregated = aggregate_claim_responses(claim_id, responses, bootstrap_seed)
         
         claim_result = {
             "id": claim_id,
-            "text": claim_text,  # Would need to be loaded from claims
+            "text": claim_text,
             **aggregated,
         }
         

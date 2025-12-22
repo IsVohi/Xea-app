@@ -9,13 +9,20 @@ import axios, { AxiosInstance } from 'axios';
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Types matching the backend schemas
+
+export interface ClaimCanonical {
+    numbers: number[];
+    addresses: string[];
+    urls: string[];
+}
+
 export interface Claim {
     id: string;
     text: string;
     paragraph_index: number;
     char_range: [number, number];
-    type: 'factual' | 'mathematical' | 'temporal' | 'comparative' | 'procedural' | 'conditional';
-    canonical: string;
+    type: 'factual' | 'numeric' | 'temporal' | 'comparative' | 'procedural' | 'conditional';
+    canonical: ClaimCanonical;
 }
 
 export interface MinerScores {
@@ -77,44 +84,85 @@ export interface StatusResponse {
     ready_for_aggregation: boolean;
 }
 
-export interface AggregatedMetrics {
+export interface ClaimAggregation {
+    id: string;
+    text: string;
     poi_agreement: number;
-    poi_confidence_interval: [number, number];
-    pouw_score: number;
-    pouw_confidence_interval: [number, number];
-    total_miners: number;
-    responding_miners: number;
-    consensus_verdict: 'verified' | 'refuted' | 'unverifiable' | 'partial';
-    claim_coverage: number;
-}
-
-export interface Recommendation {
-    action: 'approve' | 'reject' | 'review';
-    confidence: number;
-    risk_flags: string[];
-    summary: string;
+    mode_verdict: string;
+    embedding_dispersion: number;
+    pouw_mean: number;
+    pouw_ci_95: [number, number];
+    outliers: string[];
+    final_recommendation: 'supported' | 'disputed' | 'supported_with_caution';
+    miner_responses: MinerResponse[];
 }
 
 export interface EvidenceBundle {
     proposal_hash: string;
-    claims: Claim[];
-    miners: MinerResponse[];
-    aggregated_metrics: AggregatedMetrics;
-    recommendation: Recommendation;
+    job_id: string;
+    claims: ClaimAggregation[];
+    overall_poi_agreement: number;
+    overall_pouw_score: number;
+    overall_ci_95: [number, number];
+    critical_flags: string[];
+    timestamp: string;
+}
+
+export interface AggregateRequest {
+    job_id: string;
+    publish?: boolean;
+}
+
+export interface AggregateResponse {
+    job_id: string;
+    evidence_bundle: EvidenceBundle;
     ipfs_cid?: string;
-    signature?: string;
+}
+
+export interface AttestRequest {
+    job_id: string;
+    publish?: boolean;
 }
 
 export interface AttestResponse {
-    attestation_id: string;
-    evidence_cid: string;
+    job_id: string;
+    proposal_hash: string;
+    ipfs_cid?: string;
     signature: string;
-    signer_address: string;
-    tx_hash?: string;
-    tx_link?: string;
-    status: 'signed' | 'submitted' | 'confirmed';
-    created_at: string;
+    signer: string;
+    message_hash: string;
+    verification_instructions: {
+        step_1: string;
+        step_2: string;
+        step_3: string;
+        step_4: string;
+    };
 }
+
+// WebSocket message types
+export interface WSMinerResponseMessage {
+    type: 'miner_response';
+    job_id: string;
+    claim_id: string;
+    miner_id: string;
+    verdict: string;
+    timestamp: string;
+}
+
+export interface WSStatusMessage {
+    type: 'status';
+    job_id: string;
+    status: string;
+    progress: JobProgress;
+}
+
+export interface WSAggregateMessage {
+    type: 'aggregate';
+    job_id: string;
+    evidence_bundle: EvidenceBundle;
+}
+
+export type WSMessage = WSMinerResponseMessage | WSStatusMessage | WSAggregateMessage;
 
 class XeaApiClient {
     private client: AxiosInstance;
@@ -153,20 +201,26 @@ class XeaApiClient {
     }
 
     /**
-     * Aggregate validation results
+     * Aggregate validation results into evidence bundle
      */
-    async aggregate(jobId: string): Promise<EvidenceBundle> {
-        const response = await this.client.post<EvidenceBundle>('/aggregate', { job_id: jobId });
+    async aggregate(request: AggregateRequest): Promise<AggregateResponse> {
+        const response = await this.client.post<AggregateResponse>('/aggregate', request);
         return response.data;
     }
 
     /**
      * Create attestation for evidence bundle
      */
-    async attest(evidenceCid: string): Promise<AttestResponse> {
-        const response = await this.client.post<AttestResponse>('/attest', {
-            evidence_cid: evidenceCid,
-        });
+    async attest(request: AttestRequest): Promise<AttestResponse> {
+        const response = await this.client.post<AttestResponse>('/attest', request);
+        return response.data;
+    }
+
+    /**
+     * Get evidence bundle by job ID
+     */
+    async getEvidence(jobId: string): Promise<EvidenceBundle> {
+        const response = await this.client.get<EvidenceBundle>(`/evidence/${jobId}`);
         return response.data;
     }
 
@@ -180,4 +234,5 @@ class XeaApiClient {
 }
 
 export const api = new XeaApiClient();
+export const WS_BASE_URL = API_BASE_URL.replace('http', 'ws');
 export default api;
