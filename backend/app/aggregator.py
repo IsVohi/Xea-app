@@ -1,167 +1,422 @@
 """
 Xea Governance Oracle - Aggregator
 
-Aggregates miner responses and computes PoI/PoUW metrics.
+Aggregates miner responses into evidence bundles with PoI and PoUW metrics.
 """
 
-from typing import Optional
-import statistics
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 
-from app.schemas import MinerResponse, AggregatedMetrics, Recommendation
+import numpy as np
+
+from app.config import settings
+from app.schemas import (
+    EvidenceBundle,
+    ClaimAggregation,
+    MinerResponse,
+    MinerScores,
+)
+from app.stats import (
+    mean_pairwise_cosine_distance,
+    bootstrap_ci,
+    detect_mahalanobis_outliers,
+    compute_mode_agreement,
+)
+
+logger = logging.getLogger(__name__)
 
 
-# PoUW Rubric Weights
-POUW_WEIGHTS = {
-    "accuracy": 0.4,
-    "omission_risk": 0.3,
-    "evidence_quality": 0.2,
-    "governance_relevance": 0.1,
-}
+def get_responses_dir() -> Path:
+    """Get the responses data directory."""
+    responses_dir = Path(settings.data_dir) / "responses"
+    if not responses_dir.exists():
+        responses_dir = Path(__file__).parent.parent.parent / "data" / "responses"
+    responses_dir.mkdir(parents=True, exist_ok=True)
+    return responses_dir
 
 
-def calculate_pouw_composite(scores: dict) -> float:
+def get_evidence_dir() -> Path:
+    """Get the evidence bundles data directory."""
+    evidence_dir = Path(settings.data_dir) / "evidence"
+    if not evidence_dir.exists():
+        evidence_dir = Path(__file__).parent.parent.parent / "data" / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    return evidence_dir
+
+
+def get_jobs_dir() -> Path:
+    """Get the jobs data directory."""
+    jobs_dir = Path(settings.data_dir) / "jobs"
+    if not jobs_dir.exists():
+        jobs_dir = Path(__file__).parent.parent.parent / "data" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    return jobs_dir
+
+
+def load_job_data(job_id: str) -> Optional[Dict[str, Any]]:
+    """Load job data from file."""
+    jobs_dir = get_jobs_dir()
+    file_path = jobs_dir / f"{job_id}.json"
+    if not file_path.exists():
+        return None
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+
+def load_raw_responses(job_id: str) -> Optional[Dict[str, Any]]:
     """
-    Calculate PoUW composite score from individual criteria scores.
-
-    Uses weights:
-    - accuracy: 0.4
-    - omission_risk: 0.3
-    - evidence_quality: 0.2
-    - governance_relevance: 0.1
-
+    Load raw miner responses from persisted JSON.
+    
     Args:
-        scores: Dict with keys accuracy, omission_risk, evidence_quality, governance_relevance
-                Each value should be in range [0.0, 1.0]
-
+        job_id: The job identifier
+        
     Returns:
-        Composite score in range [0.0, 1.0]
+        Dict with job_id and responses list, or None if not found
     """
-    composite = sum(POUW_WEIGHTS[k] * scores.get(k, 0) for k in POUW_WEIGHTS)
-    return round(composite, 3)
+    responses_dir = get_responses_dir()
+    file_path = responses_dir / f"{job_id}.json"
+    
+    if not file_path.exists():
+        logger.warning(f"Responses file not found: {file_path}")
+        return None
+    
+    with open(file_path, "r") as f:
+        return json.load(f)
 
 
-def calculate_poi_agreement(responses: list[MinerResponse], claim_id: str) -> float:
+def group_responses_by_claim(raw_data: Dict[str, Any]) -> Dict[str, List[Dict]]:
     """
-    Calculate Proof of Inference agreement for a claim.
-
-    Measures consensus among miner verdicts.
-
+    Group raw responses by claim_id.
+    
     Args:
-        responses: List of miner responses
-        claim_id: Claim to calculate agreement for
-
+        raw_data: Raw responses data from file
+        
     Returns:
-        Agreement score in range [0.0, 1.0]
+        Dict mapping claim_id to list of miner responses
     """
-    claim_responses = [r for r in responses if r.claim_id == claim_id]
-    if not claim_responses:
-        return 0.0
-
-    verdicts = [r.verdict for r in claim_responses]
-    if not verdicts:
-        return 0.0
-
-    # Find majority verdict
-    verdict_counts = {}
-    for v in verdicts:
-        verdict_counts[v] = verdict_counts.get(v, 0) + 1
-
-    max_count = max(verdict_counts.values())
-    agreement = max_count / len(verdicts)
-    return round(agreement, 3)
+    grouped = {}
+    
+    for entry in raw_data.get("responses", []):
+        claim_id = entry.get("claim_id")
+        response = entry.get("response", {})
+        
+        if claim_id not in grouped:
+            grouped[claim_id] = []
+        grouped[claim_id].append(response)
+    
+    return grouped
 
 
-def calculate_confidence_interval(
-    values: list[float],
-    confidence: float = 0.95,
-) -> tuple[float, float]:
+def aggregate_claim_responses(
+    claim_id: str,
+    responses: List[Dict],
+    bootstrap_seed: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    Calculate confidence interval for a list of values.
-
-    Args:
-        values: List of numeric values
-        confidence: Confidence level (default 0.95 for 95% CI)
-
-    Returns:
-        Tuple of (lower, upper) bounds
-    """
-    if not values:
-        return (0.0, 0.0)
-
-    if len(values) == 1:
-        return (values[0], values[0])
-
-    mean = statistics.mean(values)
-    stdev = statistics.stdev(values)
-    n = len(values)
-
-    # Approximate z-score for common confidence levels
-    z_scores = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}
-    z = z_scores.get(confidence, 1.96)
-
-    margin = z * (stdev / (n ** 0.5))
-    lower = max(0.0, round(mean - margin, 3))
-    upper = min(1.0, round(mean + margin, 3))
-
-    return (lower, upper)
-
-
-def aggregate_miner_responses(
-    responses: list[MinerResponse],
-    claim_ids: list[str],
-) -> AggregatedMetrics:
-    """
-    Aggregate all miner responses into metrics.
-
+    Aggregate miner responses for a single claim.
+    
     Computes:
-    - PoI agreement across all claims
-    - PoUW scores with confidence intervals
-    - Consensus verdict
-
+    - poi_agreement: Mode count of verdicts / total verdicts
+    - embedding_dispersion: Mean pairwise cosine distance of embeddings
+    - pouw_mean: Mean of composite PoUW scores
+    - pouw_ci_95: Bootstrap 95% confidence interval for pouw_mean
+    - outliers: Miner IDs flagged as outliers via Mahalanobis distance
+    - final_recommendation: Based on thresholds
+    
     Args:
-        responses: All miner responses
-        claim_ids: List of claim IDs being validated
-
+        claim_id: The claim identifier
+        responses: List of miner response dicts
+        bootstrap_seed: Optional seed for reproducible bootstrap
+        
     Returns:
-        AggregatedMetrics with all computed values
+        Dict with aggregated metrics
     """
-    # TODO: Implement full aggregation logic
-    # - Calculate per-claim PoI
-    # - Average PoUW scores
-    # - Determine consensus verdict
-    # - Compute confidence intervals
+    if not responses:
+        return {
+            "poi_agreement": 0.0,
+            "mode_verdict": "unknown",
+            "embedding_dispersion": 0.0,
+            "pouw_mean": 0.0,
+            "pouw_ci_95": [0.0, 0.0],
+            "outliers": [],
+            "final_recommendation": "disputed",
+            "miner_responses": [],
+        }
+    
+    # Extract verdicts
+    verdicts = [r.get("verdict", "unknown") for r in responses]
+    mode_verdict, poi_agreement = compute_mode_agreement(verdicts)
+    
+    # Extract embeddings for dispersion calculation
+    embeddings = []
+    for r in responses:
+        emb = r.get("embedding")
+        if emb and isinstance(emb, list) and len(emb) > 0:
+            embeddings.append(emb)
+    
+    embedding_dispersion = mean_pairwise_cosine_distance(embeddings)
+    
+    # Extract PoUW scores
+    pouw_scores = []
+    score_vectors = []
+    miner_ids = []
+    
+    for r in responses:
+        scores = r.get("scores", {})
+        composite = scores.get("composite", 0.0)
+        pouw_scores.append(composite)
+        miner_ids.append(r.get("miner_id", "unknown"))
+        
+        # Build score vector for Mahalanobis
+        score_vector = [
+            scores.get("accuracy", 0.0),
+            scores.get("omission_risk", 0.0),
+            scores.get("evidence_quality", 0.0),
+            scores.get("governance_relevance", 0.0),
+        ]
+        score_vectors.append(score_vector)
+    
+    # Compute pouw_mean and CI
+    pouw_mean = float(np.mean(pouw_scores)) if pouw_scores else 0.0
+    pouw_ci_95 = bootstrap_ci(pouw_scores, n_iter=1000, alpha=0.05, seed=bootstrap_seed)
+    
+    # Detect outliers via Mahalanobis distance
+    outlier_indices = []
+    if len(score_vectors) >= 3:  # Need at least 3 samples for meaningful outlier detection
+        score_matrix = np.array(score_vectors)
+        outlier_indices = detect_mahalanobis_outliers(score_matrix, threshold=3.0)
+    
+    outlier_miner_ids = [miner_ids[i] for i in outlier_indices]
+    
+    # Determine final recommendation
+    final_recommendation = determine_recommendation(poi_agreement, pouw_mean, mode_verdict)
+    
+    return {
+        "poi_agreement": round(poi_agreement, 4),
+        "mode_verdict": mode_verdict,
+        "embedding_dispersion": round(embedding_dispersion, 4),
+        "pouw_mean": round(pouw_mean, 4),
+        "pouw_ci_95": list(pouw_ci_95),
+        "outliers": outlier_miner_ids,
+        "final_recommendation": final_recommendation,
+        "miner_responses": responses,
+    }
 
-    # Placeholder return
-    return AggregatedMetrics(
-        poi_agreement=0.0,
-        poi_confidence_interval=(0.0, 0.0),
-        pouw_score=0.0,
-        pouw_confidence_interval=(0.0, 0.0),
-        total_miners=0,
-        responding_miners=0,
-        consensus_verdict="unverifiable",
-        claim_coverage=0.0,
-    )
 
-
-def generate_recommendation(metrics: AggregatedMetrics) -> Recommendation:
+def determine_recommendation(
+    poi_agreement: float,
+    pouw_mean: float,
+    mode_verdict: str,
+) -> str:
     """
-    Generate governance recommendation from aggregated metrics.
-
+    Determine final recommendation based on thresholds.
+    
+    Decision logic:
+    - If poi_agreement >= 0.8 AND pouw_mean >= 0.75 => "supported"
+    - If poi_agreement < 0.5 OR pouw_mean < 0.5 => "disputed"
+    - Else => "supported_with_caution"
+    
+    Additionally, if mode_verdict is "refuted", always return "disputed".
+    
     Args:
-        metrics: Aggregated validation metrics
-
+        poi_agreement: Agreement ratio (0-1)
+        pouw_mean: Mean PoUW score (0-1)
+        mode_verdict: Most common verdict
+        
     Returns:
-        Recommendation with action, confidence, and summary
+        One of: "supported", "disputed", "supported_with_caution"
     """
-    # TODO: Implement recommendation logic
-    # - Determine action based on consensus and confidence
-    # - Identify risk flags
-    # - Generate human-readable summary
+    # If majority says refuted, claim is disputed
+    if mode_verdict == "refuted":
+        return "disputed"
+    
+    # High confidence support
+    if poi_agreement >= 0.8 and pouw_mean >= 0.75:
+        return "supported"
+    
+    # Low confidence or disagreement
+    if poi_agreement < 0.5 or pouw_mean < 0.5:
+        return "disputed"
+    
+    # Middle ground
+    return "supported_with_caution"
 
-    return Recommendation(
-        action="review",
-        confidence=0.0,
-        risk_flags=[],
-        summary="Insufficient data to generate recommendation",
+
+def generate_critical_flags(
+    claims_aggregated: List[Dict[str, Any]],
+) -> List[str]:
+    """
+    Generate critical flags for the evidence bundle.
+    
+    Flags are generated for:
+    - Claims with outliers
+    - Claims marked as disputed
+    - Claims with low poi_agreement
+    - Evidence links from disputing miners
+    
+    Args:
+        claims_aggregated: List of aggregated claim data
+        
+    Returns:
+        List of critical flag strings
+    """
+    flags = []
+    
+    for claim in claims_aggregated:
+        claim_id = claim.get("id", "unknown")
+        recommendation = claim.get("final_recommendation", "")
+        outliers = claim.get("outliers", [])
+        poi = claim.get("poi_agreement", 0.0)
+        
+        # Flag disputes
+        if recommendation == "disputed":
+            flags.append(f"claim {claim_id}: marked as disputed")
+        
+        # Flag outliers
+        for outlier in outliers:
+            flags.append(f"claim {claim_id}: miner {outlier} flagged as outlier")
+        
+        # Flag low agreement
+        if poi < 0.6 and poi > 0:
+            flags.append(f"claim {claim_id}: low agreement ({poi:.0%})")
+        
+        # Check for refuting miners with evidence
+        for resp in claim.get("miner_responses", []):
+            if resp.get("verdict") == "refuted" and resp.get("evidence_links"):
+                miner = resp.get("miner_id", "unknown")
+                flags.append(f"claim {claim_id}: miner {miner} disputes with evidence")
+    
+    return flags
+
+
+def aggregate_job(
+    job_id: str,
+    bootstrap_seed: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Aggregate all miner responses for a job into an evidence bundle.
+    
+    This function:
+    1. Loads raw miner responses from /data/responses/{job_id}.json
+    2. Groups responses by claim
+    3. Computes per-claim metrics (PoI, PoUW, outliers)
+    4. Aggregates into overall proposal-level metrics
+    5. Generates critical flags
+    6. Saves evidence bundle to /data/evidence/{job_id}.json
+    
+    Args:
+        job_id: The job identifier
+        bootstrap_seed: Optional seed for reproducible bootstrap CI
+        
+    Returns:
+        Evidence bundle dict, or None if job not found
+    """
+    # Load raw responses
+    raw_data = load_raw_responses(job_id)
+    if not raw_data:
+        logger.error(f"No responses found for job: {job_id}")
+        return None
+    
+    # Load job data for proposal_hash
+    job_data = load_job_data(job_id)
+    proposal_hash = job_data.get("proposal_hash", "") if job_data else ""
+    
+    # Group by claim
+    grouped = group_responses_by_claim(raw_data)
+    
+    if not grouped:
+        logger.warning(f"No grouped responses for job: {job_id}")
+        return None
+    
+    # Aggregate each claim
+    claims_aggregated = []
+    all_poi_agreements = []
+    all_pouw_scores = []
+    
+    for claim_id in sorted(grouped.keys()):
+        responses = grouped[claim_id]
+        
+        # Get claim text from first response if available
+        claim_text = ""
+        claim_type = "factual"
+        if responses:
+            # Try to get from original claim data in job
+            if job_data and "claim_ids" in job_data:
+                # Claim text would need to be loaded from claims file
+                pass
+        
+        aggregated = aggregate_claim_responses(claim_id, responses, bootstrap_seed)
+        
+        claim_result = {
+            "id": claim_id,
+            "text": claim_text,  # Would need to be loaded from claims
+            **aggregated,
+        }
+        
+        claims_aggregated.append(claim_result)
+        all_poi_agreements.append(aggregated["poi_agreement"])
+        all_pouw_scores.extend([
+            r.get("scores", {}).get("composite", 0.0)
+            for r in responses
+        ])
+    
+    # Compute overall metrics
+    overall_poi = float(np.mean(all_poi_agreements)) if all_poi_agreements else 0.0
+    overall_pouw = float(np.mean(all_pouw_scores)) if all_pouw_scores else 0.0
+    overall_ci = bootstrap_ci(all_pouw_scores, n_iter=1000, alpha=0.05, seed=bootstrap_seed)
+    
+    # Generate critical flags
+    critical_flags = generate_critical_flags(claims_aggregated)
+    
+    # Build evidence bundle
+    evidence_bundle = {
+        "proposal_hash": proposal_hash,
+        "job_id": job_id,
+        "claims": claims_aggregated,
+        "overall_poi_agreement": round(overall_poi, 4),
+        "overall_pouw_score": round(overall_pouw, 4),
+        "overall_ci_95": list(overall_ci),
+        "critical_flags": critical_flags,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    
+    # Save to file
+    save_evidence_bundle(job_id, evidence_bundle)
+    
+    logger.info(
+        f"Aggregation complete for job {job_id}",
+        extra={
+            "claims_count": len(claims_aggregated),
+            "overall_poi": overall_poi,
+            "overall_pouw": overall_pouw,
+            "flags_count": len(critical_flags),
+        }
     )
+    
+    return evidence_bundle
+
+
+def save_evidence_bundle(job_id: str, bundle: Dict[str, Any]):
+    """Save evidence bundle to file."""
+    evidence_dir = get_evidence_dir()
+    file_path = evidence_dir / f"{job_id}.json"
+    
+    with open(file_path, "w") as f:
+        json.dump(bundle, f, indent=2, default=str)
+    
+    logger.info(f"Evidence bundle saved: {file_path}")
+
+
+def load_evidence_bundle(job_id: str) -> Optional[Dict[str, Any]]:
+    """Load evidence bundle from file."""
+    evidence_dir = get_evidence_dir()
+    file_path = evidence_dir / f"{job_id}.json"
+    
+    if not file_path.exists():
+        return None
+    
+    with open(file_path, "r") as f:
+        return json.load(f)

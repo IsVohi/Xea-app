@@ -5,7 +5,7 @@ FastAPI router with all API endpoints.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from typing import Optional, List
@@ -18,7 +18,7 @@ from app.schemas import (
     StatusResponse,
     JobProgress,
     AggregateRequest,
-    EvidenceBundle,
+    AggregateResponse,
     AttestRequest,
     AttestResponse,
     Claim,
@@ -30,6 +30,8 @@ from app.schemas import (
 from app.ingest import process_ingest, load_claims, persist_claims, get_data_dir
 from app.utils import generate_job_id
 from app.workers import job_state, validate_claims_job
+from app.aggregator import aggregate_job, load_evidence_bundle
+from app.attest import create_attestation as attest_create_attestation
 
 router = APIRouter()
 
@@ -198,7 +200,7 @@ async def validate_proposal(
         job_id=job_id,
         proposal_hash=proposal_hash,
         status="queued",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         estimated_completion=None,
     )
 
@@ -279,22 +281,99 @@ async def get_job_status(job_id: str) -> StatusResponse:
 
 
 # ============================================================================
-# Aggregation & Attestation Endpoints (Stubs)
+# Aggregation & Evidence Endpoints
 # ============================================================================
 
-@router.post("/aggregate", response_model=EvidenceBundle)
-async def aggregate_results(request: AggregateRequest) -> EvidenceBundle:
+@router.post("/aggregate", response_model=AggregateResponse)
+async def aggregate_results(request: AggregateRequest) -> AggregateResponse:
     """
     Aggregate miner responses into a final evidence bundle.
+    
+    This endpoint:
+    1. Loads raw miner responses for the job
+    2. Computes per-claim PoI and PoUW metrics
+    3. Detects outliers via Mahalanobis distance
+    4. Generates critical flags
+    5. Saves and returns the evidence bundle
     """
-    # TODO: Implement full aggregation logic
-    raise HTTPException(status_code=501, detail="Not implemented yet")
+    job_id = request.job_id
+    
+    # Check job exists
+    job_data = job_state.get_job(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Check job is completed
+    if job_data.get("status") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job not ready for aggregation. Status: {job_data.get('status')}"
+        )
+    
+    # Run aggregation
+    bundle = aggregate_job(job_id)
+    if not bundle:
+        raise HTTPException(status_code=500, detail="Aggregation failed")
+    
+    # Optionally publish to IPFS
+    ipfs_cid = None
+    if request.publish:
+        from app.attest import publish_bundle_dict
+        ipfs_cid = publish_bundle_dict(bundle)
+    
+    return AggregateResponse(
+        job_id=job_id,
+        evidence_bundle=bundle,
+        ipfs_cid=ipfs_cid,
+    )
 
+
+@router.get("/evidence/{job_id}")
+async def get_evidence_bundle(job_id: str):
+    """
+    Get a saved evidence bundle by job ID.
+    """
+    bundle = load_evidence_bundle(job_id)
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Evidence bundle not found")
+    
+    return bundle
+
+
+# ============================================================================
+# Attestation Endpoints
+# ============================================================================
 
 @router.post("/attest", response_model=AttestResponse)
 async def create_attestation(request: AttestRequest) -> AttestResponse:
     """
     Create an on-chain attestation for an evidence bundle.
+    
+    This endpoint:
+    1. Loads the evidence bundle for the job
+    2. Signs it with ECDSA (or mock if no key configured)
+    3. Optionally publishes to IPFS
+    4. Returns signature and verification instructions
     """
-    # TODO: Implement attestation logic
-    raise HTTPException(status_code=501, detail="Not implemented yet")
+    job_id = request.job_id
+    
+    # Load evidence bundle
+    bundle = load_evidence_bundle(job_id)
+    if not bundle:
+        # Try to aggregate first
+        bundle = aggregate_job(job_id)
+        if not bundle:
+            raise HTTPException(status_code=404, detail="Evidence bundle not found")
+    
+    # Create attestation
+    attestation = attest_create_attestation(bundle, publish=request.publish)
+    
+    return AttestResponse(
+        job_id=job_id,
+        proposal_hash=bundle.get("proposal_hash", ""),
+        ipfs_cid=attestation.get("ipfs_cid"),
+        signature=attestation["signature"],
+        signer=attestation["signer"],
+        message_hash=attestation["message_hash"],
+        verification_instructions=attestation["verification_instructions"],
+    )
