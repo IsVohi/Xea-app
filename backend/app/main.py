@@ -158,6 +158,7 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router)
+app.include_router(router, prefix="/api")
 
 
 # ============================================================================
@@ -172,6 +173,12 @@ async def root():
         "version": "0.1.0",
         "status": "healthy",
     }
+
+
+@app.get("/api/")
+async def root_api():
+    """Health check alias for Vercel."""
+    return await root()
 
 
 @app.get("/health")

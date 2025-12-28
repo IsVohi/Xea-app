@@ -297,7 +297,12 @@ async def validate_proposal(
     job_state.create_job(job_id, proposal_hash, claims)
     
     # Start background validation
-    background_tasks.add_task(_run_validation_background, proposal_hash, job_id)
+    # Start validation (Synchronous for Vercel/Serverless)
+    # Background tasks are killed immediately on Vercel response, so we must block.
+    # We run in executor to avoid blocking the async event loop completely.
+    import asyncio
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _run_validation_background, proposal_hash, job_id)
     
     return ValidateResponse(
         job_id=job_id,
