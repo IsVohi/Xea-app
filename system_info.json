@@ -1,0 +1,292 @@
+{
+    "os": {
+        "system": "Darwin",
+        "release": "25.2.0",
+        "version": "Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:34 PST 2025; root:xnu-12377.61.12~1/RELEASE_X86_64",
+        "machine": "x86_64",
+        "processor": "i386"
+    },
+    "cpu": {
+        "physical_cores": 6,
+        "total_cores": 12,
+        "max_frequency": "2600.00Mhz",
+        "min_frequency": "2600.00Mhz",
+        "current_frequency": "2600.00Mhz",
+        "cpu_usage_per_core": [
+            "51.00%",
+            "1.30%",
+            "33.00%",
+            "1.40%",
+            "32.10%",
+            "1.50%",
+            "32.40%",
+            "1.60%",
+            "29.80%",
+            "1.60%",
+            "28.40%",
+            "1.70%"
+        ],
+        "total_cpu_usage": "18.0%"
+    },
+    "memory": {
+        "total": "16.00GB",
+        "available": "5.24GB",
+        "used": "8.89GB",
+        "percentage": "67.3%"
+    },
+    "disk": [
+        {
+            "device": "/dev/disk1s4s1",
+            "mountpoint": "/",
+            "filesystem_type": "apfs",
+            "total_size": "465.63GB",
+            "used": "11.42GB",
+            "free": "229.68GB",
+            "percentage": "4.7%"
+        },
+        {
+            "device": "/dev/disk1s2",
+            "mountpoint": "/System/Volumes/Preboot",
+            "filesystem_type": "apfs",
+            "total_size": "465.63GB",
+            "used": "2.49GB",
+            "free": "229.68GB",
+            "percentage": "1.1%"
+        },
+        {
+            "device": "/dev/disk1s6",
+            "mountpoint": "/System/Volumes/VM",
+            "filesystem_type": "apfs",
+            "total_size": "465.63GB",
+            "used": "5.00GB",
+            "free": "229.68GB",
+            "percentage": "2.1%"
+        },
+        {
+            "device": "/dev/disk1s5",
+            "mountpoint": "/System/Volumes/Update",
+            "filesystem_type": "apfs",
+            "total_size": "465.63GB",
+            "used": "3.23MB",
+            "free": "229.68GB",
+            "percentage": "0.0%"
+        },
+        {
+            "device": "/dev/disk1s1",
+            "mountpoint": "/System/Volumes/Data",
+            "filesystem_type": "apfs",
+            "total_size": "465.63GB",
+            "used": "215.54GB",
+            "free": "229.68GB",
+            "percentage": "48.4%"
+        }
+    ],
+    "gpu": [],
+    "network": {
+        "lo0": [
+            {
+                "address": "127.0.0.1",
+                "netmask": "255.0.0.0"
+            },
+            {
+                "address": "127.0.2.2",
+                "netmask": null
+            },
+            {
+                "address": "127.0.2.3",
+                "netmask": null
+            },
+            {
+                "address": "::1",
+                "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+            },
+            {
+                "address": "fe80::1%lo0",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "en0": [
+            {
+                "address": "192.168.31.27",
+                "netmask": "255.255.255.0"
+            },
+            {
+                "address": "26:04:8e:fc:28:82",
+                "netmask": null
+            },
+            {
+                "address": "fe80::1482:b702:4246:c7fb%en0",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            },
+            {
+                "address": "2409:40d4:1117:8756:1cec:739f:2d6b:ec75",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            },
+            {
+                "address": "2409:40d4:1117:8756:3995:6e28:dc8e:cc73",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "bridge100": [
+            {
+                "address": "172.16.183.1",
+                "netmask": "255.255.255.0"
+            },
+            {
+                "address": "8a:66:5a:84:a8:64",
+                "netmask": null
+            },
+            {
+                "address": "fe80::8866:5aff:fe84:a864%bridge100",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "bridge101": [
+            {
+                "address": "172.16.238.1",
+                "netmask": "255.255.255.0"
+            },
+            {
+                "address": "8a:66:5a:84:a8:65",
+                "netmask": null
+            },
+            {
+                "address": "fe80::8866:5aff:fe84:a865%bridge101",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "utun4": [
+            {
+                "address": "172.16.0.2",
+                "netmask": "255.255.255.255"
+            },
+            {
+                "address": "fe80::aede:48ff:fe00:1122%utun4",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            },
+            {
+                "address": "2606:4700:110:86ae:fe28:8ab1:6929:943a",
+                "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+            }
+        ],
+        "en6": [
+            {
+                "address": "ac:de:48:00:11:22",
+                "netmask": null
+            },
+            {
+                "address": "fe80::aede:48ff:fe00:1122%en6",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "ap1": [
+            {
+                "address": "f2:51:9a:d4:4e:b8",
+                "netmask": null
+            },
+            {
+                "address": "fe80::f051:9aff:fed4:4eb8%ap1",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "awdl0": [
+            {
+                "address": "a6:e6:10:38:f6:63",
+                "netmask": null
+            },
+            {
+                "address": "fe80::a4e6:10ff:fe38:f663%awdl0",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "llw0": [
+            {
+                "address": "a6:e6:10:38:f6:63",
+                "netmask": null
+            },
+            {
+                "address": "fe80::a4e6:10ff:fe38:f663%llw0",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "en3": [
+            {
+                "address": "82:ea:0d:80:88:05",
+                "netmask": null
+            }
+        ],
+        "en1": [
+            {
+                "address": "82:ea:0d:80:88:01",
+                "netmask": null
+            }
+        ],
+        "en2": [
+            {
+                "address": "82:ea:0d:80:88:00",
+                "netmask": null
+            }
+        ],
+        "en4": [
+            {
+                "address": "82:ea:0d:80:88:04",
+                "netmask": null
+            }
+        ],
+        "bridge0": [
+            {
+                "address": "82:ea:0d:80:88:01",
+                "netmask": null
+            }
+        ],
+        "vmenet0": [
+            {
+                "address": "f6:04:17:16:c1:a0",
+                "netmask": null
+            }
+        ],
+        "vmenet1": [
+            {
+                "address": "56:40:e5:61:35:86",
+                "netmask": null
+            }
+        ],
+        "vmenet2": [
+            {
+                "address": "12:5d:57:f0:82:b0",
+                "netmask": null
+            }
+        ],
+        "vmenet3": [
+            {
+                "address": "46:48:cd:d1:13:11",
+                "netmask": null
+            }
+        ],
+        "utun0": [
+            {
+                "address": "fe80::5c3e:c23d:2c34:ad85%utun0",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "utun1": [
+            {
+                "address": "fe80::3506:4a99:7d91:55cb%utun1",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "utun2": [
+            {
+                "address": "fe80::efa7:500e:4815:b611%utun2",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ],
+        "utun3": [
+            {
+                "address": "fe80::ce81:b1c:bd2c:69e%utun3",
+                "netmask": "ffff:ffff:ffff:ffff::"
+            }
+        ]
+    },
+    "timestamp": "2025-12-25 22:32:56"
+}

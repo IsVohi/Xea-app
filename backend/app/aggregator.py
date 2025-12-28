@@ -324,6 +324,12 @@ def aggregate_job(
     job_data = load_job_data(job_id)
     proposal_hash = job_data.get("proposal_hash", "") if job_data else ""
     
+    # Load versioning metadata from job
+    proposal_id = job_data.get("proposal_id") if job_data else None
+    version_number = job_data.get("version_number") if job_data else None
+    claim_diff = job_data.get("claim_diff") if job_data else None
+    revalidated_claim_ids = job_data.get("revalidated_claims", []) if job_data else []
+    
     # Group by claim
     grouped = group_responses_by_claim(raw_data)
     
@@ -353,9 +359,13 @@ def aggregate_job(
         
         aggregated = aggregate_claim_responses(claim_id, responses, bootstrap_seed)
         
+        # Mark if this claim was revalidated (vs inherited)
+        was_revalidated = claim_id in revalidated_claim_ids if revalidated_claim_ids else True
+        
         claim_result = {
             "id": claim_id,
             "text": claim_text,
+            "was_revalidated": was_revalidated,
             **aggregated,
         }
         
@@ -374,17 +384,57 @@ def aggregate_job(
     # Generate critical flags
     critical_flags = generate_critical_flags(claims_aggregated)
     
+    # Determine validation scope
+    if claim_diff:
+        validation_scope = "selective" if revalidated_claim_ids else "full"
+    else:
+        validation_scope = "full"
+    
     # Build evidence bundle
     evidence_bundle = {
         "proposal_hash": proposal_hash,
         "job_id": job_id,
+        
+        # Versioning metadata (NEW)
+        "proposal_id": proposal_id,
+        "version_number": version_number,
+        "claim_diff": claim_diff,
+        "validation_scope": validation_scope,
+        "revalidated_claims": revalidated_claim_ids,
+        
         "claims": claims_aggregated,
         "overall_poi_agreement": round(overall_poi, 4),
         "overall_pouw_score": round(overall_pouw, 4),
         "overall_ci_95": list(overall_ci),
         "critical_flags": critical_flags,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        
+        # Resilience metadata (defaults - can be overridden by workers)
+        "redundancy_level": "full",
+        "miners_requested": 5,
+        "miners_responded": len(all_pouw_scores) if all_pouw_scores else 0,
+        "missing_miners": [],
+        "confidence_adjustment_factor": 1.0,
+        
+        # Verification metadata
+        "replay_version": "1.0",
+        "verification_instructions": {
+            "algorithm": "SHA256",
+            "components": ["claims_hash", "responses_hash", "aggregation_hash"],
+            "cli_command": "python -m backend.cli verify <file.json>",
+        },
+        
+        # Network metadata (for testnet visibility)
+        "network_metadata": {
+            "network_used": settings.cortensor_network,
+            "fallback_attempted": False,
+            "miner_quorum_target": settings.miner_quorum,
+        },
     }
+    
+    # Compute and add computation hash
+    from app.replay import compute_evidence_hash
+    evidence_bundle["computation_hash"] = compute_evidence_hash(evidence_bundle)
     
     # Save to file
     save_evidence_bundle(job_id, evidence_bundle)
@@ -396,6 +446,7 @@ def aggregate_job(
             "overall_poi": overall_poi,
             "overall_pouw": overall_pouw,
             "flags_count": len(critical_flags),
+            "computation_hash": evidence_bundle["computation_hash"],
         }
     )
     

@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Set
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -116,8 +117,19 @@ ws_manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
+    """Application lifespan handler with startup checks."""
     logger.info("Xea Governance Oracle starting...")
+    
+    # Check Cortensor Router connectivity
+    if all([settings.cortensor_router_url, not settings.use_mock_miners]):
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.get(f"{settings.cortensor_router_url}/health")
+            logger.info(f"✅ Connected to Cortensor Router at {settings.cortensor_router_url}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not connect to Cortensor Router ({settings.cortensor_router_url}): {e}")
+            logger.warning("System will continue but validation requests may fail.")
+            
     yield
     logger.info("Xea Governance Oracle shutting down...")
 
@@ -165,11 +177,30 @@ async def root():
 @app.get("/health")
 async def health():
     """Detailed health check."""
-    return {
+    status = {
         "status": "healthy",
-        "redis": "connected",  # TODO: Implement actual check
         "version": "0.1.0",
+        "redis": "connected", # TODO: Implement actual check
+        "router": "not_configured"
     }
+    
+    if settings.use_mock_miners:
+        status["router"] = "mock_mode"
+        return status
+        
+    if settings.cortensor_router_url:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{settings.cortensor_router_url}/health")
+                if resp.status_code == 200:
+                    status["router"] = "connected"
+                else:
+                    status["router"] = f"error_{resp.status_code}"
+        except Exception:
+            status["router"] = "disconnected"
+            # Don't degrade overall status, just report router state
+            
+    return status
 
 
 # ============================================================================
@@ -189,6 +220,8 @@ async def websocket_job_updates(websocket: WebSocket, job_id: str):
     The connection remains open until the client disconnects or
     the aggregation is complete.
     """
+    from app.workers import job_state
+    
     await ws_manager.connect(websocket, job_id)
     
     try:
@@ -199,26 +232,57 @@ async def websocket_job_updates(websocket: WebSocket, job_id: str):
             "message": "Connected to job updates stream",
         })
         
-        # Keep connection alive, handle client messages
+        last_status = None
+        last_stage = None
+        
+        # Active polling loop - push status updates to client
         while True:
             try:
-                # Wait for client messages (ping/pong or disconnect)
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=30.0
-                )
+                # Poll job status
+                job_data = job_state.get_job(job_id)
+                if job_data:
+                    current_status = job_data.get("status")
+                    current_stage = job_data.get("current_stage")
+                    
+                    # Push update if status or stage changed
+                    if current_status != last_status or current_stage != last_stage:
+                        await websocket.send_json({
+                            "type": "status",
+                            "job_id": job_id,
+                            "status": current_status,
+                            "current_stage": current_stage,
+                            "progress": {
+                                "claims_total": job_data.get("claims_total", 0),
+                                "claims_validated": job_data.get("claims_validated", 0),
+                                "miners_contacted": job_data.get("miners_contacted", 0),
+                                "miners_responded": job_data.get("miners_responded", 0),
+                            },
+                            "retries_attempted": job_data.get("retries_attempted", 0),
+                            "last_heartbeat": job_data.get("last_heartbeat"),
+                        })
+                        last_status = current_status
+                        last_stage = current_stage
+                        
+                        # If completed, notify and let client handle aggregation
+                        if current_status == "completed":
+                            logger.info(f"Job {job_id} completed, notifying WebSocket client")
                 
-                # Handle ping
-                if data == "ping":
-                    await websocket.send_json({"type": "pong"})
-                    
-            except asyncio.TimeoutError:
-                # Send keepalive
+                # Check for client messages (non-blocking with short timeout)
                 try:
-                    await websocket.send_json({"type": "keepalive"})
-                except Exception:
-                    break
+                    data = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=1.0  # Poll every 1 second
+                    )
+                    if data == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except asyncio.TimeoutError:
+                    # Normal - just continue polling
+                    pass
                     
+            except Exception as e:
+                logger.warning(f"WebSocket poll error: {e}")
+                break
+                
     except WebSocketDisconnect:
         logger.info(f"Client disconnected from job {job_id}")
     except Exception as e:

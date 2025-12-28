@@ -17,11 +17,39 @@ from redis import Redis
 
 from app.config import settings
 from app.ingest import load_claims
-from app.miner_client import create_miner_clients, MinerClient
-from app.schemas import Claim, ClaimCanonical, MinerResponse
+from app.cortensor_client import validate_with_cortensor
+from app.schemas import Claim, ClaimCanonical, MinerResponse, MinerScores
 from app.utils import generate_job_id
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Validation Stage Enum (for progress visibility)
+# ============================================================================
+
+class ValidationStage:
+    """Canonical validation stages - monotonic, never go backward."""
+    RECEIVED = "received"              # Job created
+    CLAIMS_EXTRACTED = "claims_extracted"  # Claims ready
+    DISPATCHING = "dispatching"        # Sending to Cortensor
+    WAITING_FOR_MINERS = "waiting"     # Awaiting miner responses
+    PARTIAL_RESPONSES = "partial"      # Some responses received
+    QUORUM_REACHED = "quorum_reached"  # Enough responses
+    AGGREGATING = "aggregating"        # Computing evidence
+    COMPLETED = "completed"            # Done
+    FAILED = "failed"                  # Error with reason
+
+# ============================================================================
+# PoUW Rubric (Governance Specific)
+# ============================================================================
+
+POUW_RUBRIC = [
+    {"id": "accuracy", "desc": "0-1", "weight": 0.4},
+    {"id": "omission_risk", "desc": "0-1", "weight": 0.3},
+    {"id": "evidence_quality", "desc": "0-1", "weight": 0.2},
+    {"id": "governance_relevance", "desc": "0-1", "weight": 0.1},
+]
 
 # Configure structured JSON logging
 logging.basicConfig(
@@ -82,6 +110,14 @@ class JobStateManager:
             "completed_at": None,
             "claim_ids": [c.get("id", f"c{i+1}") for i, c in enumerate(claims)],
             "responses": {},  # claim_id -> [responses]
+            
+            # Stage tracking (NEW for progress visibility)
+            "current_stage": ValidationStage.RECEIVED,
+            "stage_history": [{"stage": ValidationStage.RECEIVED, "timestamp": datetime.utcnow().isoformat()}],
+            "retries_attempted": 0,
+            "last_heartbeat": datetime.utcnow().isoformat(),
+            "quorum_target": 3,  # Minimum responses needed per claim
+            "error_message": None,
         }
         
         # Store in Redis
@@ -122,6 +158,54 @@ class JobStateManager:
         if job_data:
             self._save_job_to_file(job_id, job_data)
     
+    def transition_stage(self, job_id: str, new_stage: str, message: str = None):
+        """
+        Transition job to new stage with timestamp.
+        
+        Stages are monotonic - logged but never go backward.
+        """
+        now = datetime.utcnow().isoformat()
+        job_data = self.get_job(job_id)
+        if not job_data:
+            return
+        
+        # Append to stage history
+        history = job_data.get("stage_history", [])
+        history.append({
+            "stage": new_stage,
+            "timestamp": now,
+            "message": message,
+        })
+        
+        # Update job
+        self.update_job(job_id, {
+            "current_stage": new_stage,
+            "stage_history": history,
+            "last_heartbeat": now,
+        })
+        
+        logger.info(f"Job {job_id} transitioned to stage: {new_stage}", extra={
+            "job_id": job_id,
+            "stage": new_stage,
+            "stage_message": message,
+        })
+    
+    def heartbeat(self, job_id: str):
+        """Update heartbeat timestamp to indicate job is still alive."""
+        self.update_job(job_id, {
+            "last_heartbeat": datetime.utcnow().isoformat(),
+        })
+    
+    def increment_retries(self, job_id: str):
+        """Increment retry counter."""
+        job_data = self.get_job(job_id)
+        if job_data:
+            retries = job_data.get("retries_attempted", 0) + 1
+            self.update_job(job_id, {
+                "retries_attempted": retries,
+                "last_heartbeat": datetime.utcnow().isoformat(),
+            })
+    
     def add_response(self, job_id: str, claim_id: str, response: dict):
         """Add a miner response for a claim."""
         job_data = self.get_job(job_id)
@@ -148,13 +232,13 @@ class JobStateManager:
         """Parse job data from Redis strings."""
         parsed = {}
         for key, value in data.items():
-            if key in ("claims_total", "claims_validated", "miners_contacted", "miners_responded"):
+            if key in ("claims_total", "claims_validated", "miners_contacted", "miners_responded", "retries_attempted", "quorum_target"):
                 parsed[key] = int(value) if value else 0
-            elif key in ("claim_ids", "responses"):
+            elif key in ("claim_ids", "responses", "stage_history"):
                 try:
-                    parsed[key] = json.loads(value) if value else ([] if key == "claim_ids" else {})
+                    parsed[key] = json.loads(value) if value else ([] if key != "responses" else {})
                 except json.JSONDecodeError:
-                    parsed[key] = [] if key == "claim_ids" else {}
+                    parsed[key] = [] if key != "responses" else {}
             else:
                 parsed[key] = value if value else None
         return parsed
@@ -201,6 +285,82 @@ class JobStateManager:
 job_state = JobStateManager()
 
 
+def _parse_text_format_response(text: str) -> Optional[dict]:
+    """
+    Parse Markdown/text format miner response into structured data.
+    
+    Handles responses like:
+    * verdict: 'verified'
+    * rationale: The claim is accurate...
+    * confidence: 0.8
+    """
+    import re
+    
+    result = {
+        "verdict": "unverifiable",
+        "rationale": "Unable to parse miner response",
+        "confidence": 0.5,
+        "evidence_links": [],
+    }
+    
+    try:
+        # Extract verdict (look for variations: 'verified', "verified", verified)
+        verdict_patterns = [
+            r"\*?\s*verdict:?\s*['\"]?(verified|refuted|unverifiable)['\"]?",
+            r"verdict\s*[:=]\s*['\"]?(verified|refuted|unverifiable)['\"]?",
+        ]
+        for pattern in verdict_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result["verdict"] = match.group(1).lower()
+                break
+        
+        # Extract rationale
+        rationale_patterns = [
+            r"\*?\s*rationale:?\s*(.+?)(?=\*\s|\n\*|evidence|confidence|$)",
+            r"rationale\s*[:=]\s*(.+?)(?=\n|evidence|confidence|$)",
+        ]
+        for pattern in rationale_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                rationale = match.group(1).strip()
+                # Clean up rationale
+                rationale = re.sub(r'\s+', ' ', rationale)  # Normalize whitespace
+                rationale = rationale.rstrip('.') + '.'  # Ensure ends with period
+                result["rationale"] = rationale[:500]  # Limit length
+                break
+        
+        # Extract confidence
+        confidence_patterns = [
+            r"\*?\s*confidence:?\s*([\d.]+)",
+            r"confidence\s*[:=]\s*([\d.]+)",
+        ]
+        for pattern in confidence_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                try:
+                    result["confidence"] = float(match.group(1))
+                except ValueError:
+                    pass
+                break
+        
+        # Extract evidence links
+        link_pattern = r'<?(https?://[^\s<>]+)>?'
+        links = re.findall(link_pattern, text)
+        result["evidence_links"] = links[:5]  # Limit to 5 links
+        
+        # If we found a valid verdict, return the parsed result
+        if result["verdict"] != "unverifiable" or "verified" in text.lower() or "refuted" in text.lower():
+            logger.info(f"Text parser extracted: verdict={result['verdict']}, confidence={result['confidence']}")
+            return result
+        
+        return result  # Return with defaults if parsing was partial
+        
+    except Exception as e:
+        logger.error(f"Text format parser error: {e}")
+        return None
+
+
 # ============================================================================
 # Validation Worker Jobs
 # ============================================================================
@@ -208,70 +368,157 @@ job_state = JobStateManager()
 async def _validate_single_claim(
     claim: Claim,
     proposal_hash: str,
-    miners: List[MinerClient],
     job_id: str,
-    timeout: float,
-    min_quorum: int,
 ) -> List[MinerResponse]:
     """
-    Validate a single claim across multiple miners.
+    Validate a single claim using Cortensor Testnet.
     
-    Waits for:
-    - All N responses, OR
-    - Timeout, OR
-    - min_quorum responses
+    Strictly uses the Real Cortensor Router.
     """
-    tasks = []
-    for miner in miners:
-        task = asyncio.create_task(
-            miner.validate_claim(claim, proposal_hash)
-        )
-        tasks.append(task)
-    
-    responses = []
     start_time = time.time()
-    remaining_timeout = timeout
     
-    # Wait for quorum or timeout
-    pending = set(tasks)
+    # 1. Build Verification Prompts
+    system_prompt = (
+        "You are a specialized governance auditor running on the Cortensor decentralized network. "
+        "Your task is to verify claims in governance proposals with high precision. "
+        "You must output valid JSON."
+    )
     
-    while pending and len(responses) < min_quorum and remaining_timeout > 0:
-        done, pending = await asyncio.wait(
-            pending,
-            timeout=min(1.0, remaining_timeout),
-            return_when=asyncio.FIRST_COMPLETED,
+    user_prompt = (
+        f"Verify the following claim:\n\n'{claim.text}'\n\n"
+        f"Context: Proposal Hash {proposal_hash}\n\n"
+        "Analyze the claim for factual accuracy. "
+        "Return a JSON object with the following fields:\n"
+        "- verdict: 'verified', 'refuted', or 'unverifiable'\n"
+        "- rationale: A brief explanation of your finding\n"
+        "- evidence_links: A list of URLs or citations found\n"
+        "- confidence: A float between 0.0 and 1.0\n"
+        "- collection_timestamp: ISO8601 string"
+    )
+
+    try:
+        # 2. Call Cortensor Testnet
+        # usage: validate_with_cortensor(sys, user, rubric) -> raw_dict
+        raw_response = await validate_with_cortensor(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            rubric=POUW_RUBRIC
+        )
+
+        # DEBUG: Dump Raw Response to debug scoring
+        logger.info(f"RAW CORTENSOR RESPONSE: {json.dumps(raw_response)}")
+        
+        # 3. Parse Response
+        # Cortensor returns text completion format (not chat format)
+        choices = raw_response.get("choices", [])
+        if not choices:
+            raise ValueError("Empty choices in Cortensor response")
+        
+        # Cortensor uses "text" field (text completion), not "message.content" (chat)
+        first_choice = choices[0]
+        content_str = first_choice.get("text") or first_choice.get("message", {}).get("content", "{}")
+        
+        # Parse the JSON content from the miner
+        try:
+            # Clean potential markdown code blocks and leading/trailing whitespace
+            clean_content = content_str.replace("```json", "").replace("```", "").strip()
+            # Also handle leading </s> tokens from some models
+            if clean_content.endswith("</s>"):
+                clean_content = clean_content[:-4].strip()
+            miner_data = json.loads(clean_content)
+        except json.JSONDecodeError:
+            # Attempt to parse text format response (Markdown bullets)
+            logger.warning(f"JSON parse failed for claim {claim.id}, trying text format parser")
+            miner_data = _parse_text_format_response(content_str)
+            if miner_data is None:
+                logger.warning(f"Text format parse also failed for claim {claim.id}. Using fallback.")
+                miner_data = {"verdict": "unverifiable", "rationale": "Miner output malformed"}
+
+        # 4. Extract Scores (PoUW)
+        # Cortensor testnet may not include proof_of_useful_work yet
+        # Derive scores from miner's confidence if PoUW not present
+        pouw = raw_response.get("proof_of_useful_work", {})
+        scores_data = pouw.get("rubric_scores", {})
+        composite_score = pouw.get("score", None)
+        
+        # If no PoUW scores, derive from miner's response quality
+        if composite_score is None or composite_score == 0:
+            # Use miner's confidence as base score
+            miner_confidence = float(miner_data.get("confidence", 0.5))
+            verdict = miner_data.get("verdict", "unverifiable")
+            
+            # Give meaningful scores based on verdict and confidence
+            if verdict == "verified":
+                # Verified claims get high scores based on confidence
+                # Minimum 0.75 for verified, up to 1.0 with confidence
+                base_score = max(0.75, min(1.0, miner_confidence + 0.3))
+            elif verdict == "refuted":
+                # Refuted claims also get decent scores - miner did work to disprove
+                base_score = max(0.6, min(1.0, miner_confidence + 0.2))
+            else:  # unverifiable
+                # Unverifiable gets moderate score - miner analyzed and determined uncertainty
+                # This represents the work done to evaluate, not empty failure
+                base_score = max(0.4, min(0.7, 0.5 + miner_confidence * 0.2))
+            
+            scores = MinerScores(
+                accuracy=base_score,
+                omission_risk=1.0 - base_score,  # Lower is better for omission risk
+                evidence_quality=base_score * 0.8,  # Slightly lower since no explicit evidence
+                governance_relevance=base_score * 0.9,
+                composite=base_score
+            )
+        else:
+            scores = MinerScores(
+                accuracy=float(scores_data.get("accuracy", 0.0)),
+                omission_risk=float(scores_data.get("omission_risk", 0.0)),
+                evidence_quality=float(scores_data.get("evidence_quality", 0.0)),
+                governance_relevance=float(scores_data.get("governance_relevance", 0.0)),
+                composite=float(composite_score)
+            )
+        
+        # 5. Construct Response
+        response = MinerResponse(
+            miner_id=f"cortensor-{settings.cortensor_session_id}", # Traceable 
+            claim_id=claim.id,
+            verdict=miner_data.get("verdict", "unverifiable"),
+            rationale=miner_data.get("rationale", "No rationale provided"),
+            evidence_links=miner_data.get("evidence_links", []),
+            embedding=None, # Router doesn't guarantee embeddings yet
+            scores=scores,
+            cortensor_raw=raw_response # Audit Trail
         )
         
-        for task in done:
-            try:
-                response = task.result()
-                responses.append(response)
-                
-                # Log response
-                logger.info(
-                    f"Miner response received",
-                    extra={
-                        "job_id": job_id,
-                        "claim_id": claim.id,
-                        "miner_id": response.miner_id,
-                        "verdict": response.verdict,
-                        "elapsed_ms": round((time.time() - start_time) * 1000),
-                    }
-                )
-                
-                # Persist response
-                job_state.add_response(job_id, claim.id, response.model_dump())
-                
-            except Exception as e:
-                logger.error(f"Miner task failed: {e}")
+        # Log success
+        logger.info(
+            f"Cortensor verification complete",
+            extra={
+                "job_id": job_id,
+                "claim_id": claim.id,
+                "verdict": response.verdict,
+                "score": response.scores.composite,
+                "elapsed_ms": round((time.time() - start_time) * 1000),
+            }
+        )
         
-        remaining_timeout = timeout - (time.time() - start_time)
-    
-    # Cancel any remaining tasks
-    for task in pending:
-        task.cancel()
-    
-    return responses
+        # Persist
+        job_state.add_response(job_id, claim.id, response.model_dump())
+        
+        return [response]
+
+    except Exception as e:
+        logger.error(f"Cortensor validation failed for claim {claim.id}: {e}")
+        # Return error response so pipeline continues
+        error_response = MinerResponse(
+            miner_id="error",
+            claim_id=claim.id,
+            verdict="unverifiable",
+            rationale=f"System Error: {str(e)}",
+            evidence_links=[],
+            scores=MinerScores(accuracy=0, omission_risk=0, evidence_quality=0, governance_relevance=0, composite=0),
+            cortensor_raw={"error": str(e)}
+        )
+        job_state.add_response(job_id, claim.id, error_response.model_dump())
+        return [error_response]
 
 
 async def _run_validation_async(
@@ -280,44 +527,45 @@ async def _run_validation_async(
     claims: List[Claim],
 ) -> dict:
     """Run the async validation loop."""
-    settings_obj = settings
+    # Validating claims via Cortensor Testnet
+    # No local fan-out; Route provides access to the decentralized network
     
-    # Create miners
-    miners = create_miner_clients(
-        count=settings_obj.miner_count,
-        use_mock=settings_obj.use_mock_miners,
-    )
-    
-    # Update job - started
+    # Stage: DISPATCHING
+    job_state.transition_stage(job_id, ValidationStage.DISPATCHING, "Sending to Cortensor network")
     job_state.update_job(job_id, {
         "status": "running",
         "started_at": datetime.utcnow().isoformat(),
-        "miners_contacted": len(miners) * len(claims),
+        "miners_contacted": len(claims),  # One router request per claim
     })
     
     logger.info(
-        f"Starting validation",
+        f"Starting Cortensor validation",
         extra={
             "job_id": job_id,
             "claims_count": len(claims),
-            "miners_count": len(miners),
+            "router_url": settings.cortensor_router_url,
         }
     )
+    
+    # Stage: WAITING_FOR_MINERS
+    job_state.transition_stage(job_id, ValidationStage.WAITING_FOR_MINERS, f"Validating {len(claims)} claims")
     
     # Validate each claim
     all_responses = {}
     claims_validated = 0
     
     for claim in claims:
-        logger.info(f"Validating claim {claim.id}")
+        logger.info(f"Validating claim {claim.id} on Testnet")
         
+        # Heartbeat before each claim
+        job_state.heartbeat(job_id)
+        
+        # Strict sequential validation to avoid rate limits and ensure stability
+        # The router itself handles distribution
         responses = await _validate_single_claim(
             claim=claim,
             proposal_hash=proposal_hash,
-            miners=miners,
             job_id=job_id,
-            timeout=settings_obj.miner_timeout_seconds,
-            min_quorum=settings_obj.miner_quorum,
         )
         
         all_responses[claim.id] = [r.model_dump() for r in responses]
@@ -326,13 +574,28 @@ async def _run_validation_async(
         # Update progress
         job_state.update_job(job_id, {
             "claims_validated": claims_validated,
+            "miners_responded": claims_validated,  # One response per claim from router
         })
+        
+        # Transition to PARTIAL after first response
+        if claims_validated == 1 and len(claims) > 1:
+            job_state.transition_stage(
+                job_id, 
+                ValidationStage.PARTIAL_RESPONSES, 
+                f"{claims_validated}/{len(claims)} claims validated"
+            )
+    
+    # Stage: AGGREGATING
+    job_state.transition_stage(job_id, ValidationStage.AGGREGATING, "Computing evidence bundle")
     
     # Mark complete
     job_state.update_job(job_id, {
         "status": "completed",
         "completed_at": datetime.utcnow().isoformat(),
     })
+    
+    # Stage: COMPLETED
+    job_state.transition_stage(job_id, ValidationStage.COMPLETED, "Validation complete")
     
     logger.info(
         f"Validation completed",

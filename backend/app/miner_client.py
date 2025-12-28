@@ -1,5 +1,10 @@
 """
-Xea Governance Oracle - Miner Client
+Xea Governance Oracle - Miner Client [DEPRECATED]
+
+DEPRECATION WARNING:
+This module contains legacy mock/simulated miner logic.
+It is strictly FORBIDDEN for use in production validation paths.
+All real validation must go through `app.cortensor_client`.
 
 Abstract and concrete implementations for communicating with decentralized inference miners.
 """
@@ -446,90 +451,102 @@ class CortensorRouterMinerClient(MinerClient):
         rubric: Optional[List[Dict]] = None,
     ) -> MinerResponse:
         """
-        Validate claim through Cortensor Router.
-        
-        TODO: Integrate with actual Cortensor Router API once credentials are available.
+        Validate claim through Cortensor Router using Route/Poll pattern.
         """
-        # Build request payload
-        payload = build_miner_request_payload(claim, proposal_hash, demo_mode=True)
-        
-        # TODO: Replace with actual Cortensor Router endpoint
-        url = f"{self.router_url}/v1/validate"
-        
+        # If no router configured, fallback to mock (safety)
         if not self.router_url:
-            logger.warning("Cortensor router URL not configured, using mock response")
-            # Fallback to mock behavior if not configured
+            logger.warning("Cortensor router URL not configured, falling back to mock")
             mock_client = MockMinerClient(miner_id=self._miner_id)
             return await mock_client.validate_claim(claim, proposal_hash, rubric)
+
+        # 1. Build Payload
+        # We use a UUID for the client-side request ID, but the Router will also assign a task ID
+        payload = build_miner_request_payload(claim, proposal_hash, demo_mode=True)
         
-        # Make request to Cortensor
-        response_data = await self._make_request_with_retry("POST", url, payload)
+        # 2. Dispatch Task (POST /route)
+        route_url = f"{self.router_url}/route"
+        dispatch_response = await self._make_request_with_retry("POST", route_url, payload)
         
-        if response_data.get("error"):
-            # Return unknown verdict on error
-            return MinerResponse(
-                miner_id=self._miner_id,
-                claim_id=claim.id,
-                verdict="unverifiable",
-                rationale=f"Error from Cortensor: {response_data.get('message', 'Unknown error')}",
-                evidence_links=[],
-                embedding=None,
-                scores=MinerScores(
-                    accuracy=0.0,
-                    omission_risk=0.0,
-                    evidence_quality=0.0,
-                    governance_relevance=0.0,
-                    composite=0.0,
-                ),
-            )
+        if dispatch_response.get("error"):
+            return self._create_error_response(claim, f"Dispatch failed: {dispatch_response.get('message')}")
+            
+        task_id = dispatch_response.get("task_id") or dispatch_response.get("request_id")
+        if not task_id:
+            return self._create_error_response(claim, "Router did not return task_id")
+            
+        # 3. Poll for Results (GET /status/{task_id})
+        status_url = f"{self.router_url}/status/{task_id}"
+        start_time = time.time()
         
-        # TODO: Parse actual Cortensor response format
-        # For now, scaffold assumes a compatible response structure
+        while (time.time() - start_time) < self.timeout:
+            status_response = await self._make_request_with_retry("GET", status_url, {})
+            
+            if status_response.get("error"):
+                logger.warning(f"Poll error for task {task_id}: {status_response.get('message')}")
+                # Continue polling if it's just a transient error, or break if fatal?
+                # _make_request_with_retry already handles transient errors.
+                # If it returns error here, it's likely 4xx or persistent 5xx.
+                return self._create_error_response(claim, f"Poll failed: {status_response.get('message')}")
+            
+            status = status_response.get("status")
+            if status == "completed":
+                # Task done! Map result
+                return self._map_router_response(claim, status_response, self._miner_id)
+            
+            elif status in ("failed", "error"):
+                return self._create_error_response(claim, f"Router task failed: {status_response.get('message')}")
+            
+            # Still pending/processing
+            await asyncio.sleep(1.0)
+            
+        # 4. Timeout
+        return self._create_error_response(claim, "Validation timed out waiting for Router")
+
+    def _create_error_response(self, claim: Claim, message: str) -> MinerResponse:
+        """Helper to create error/unverifiable response."""
+        logger.error(f"Cortensor Router Error: {message}")
+        return MinerResponse(
+            miner_id=self._miner_id,
+            claim_id=claim.id,
+            verdict="unverifiable",
+            rationale=f"System Error: {message}",
+            evidence_links=[],
+            embedding=None,
+            scores=MinerScores(accuracy=0, omission_risk=0, evidence_quality=0, governance_relevance=0, composite=0),
+        )
+
+    def _map_router_response(self, claim: Claim, data: Dict[str, Any], miner_id: str) -> MinerResponse:
+        """Map Router JSON response to internal MinerResponse schema."""
         try:
-            verdict = response_data.get("verdict", "unknown")
-            verdict_map = {
-                "supported": "verified",
-                "disputed": "refuted", 
-                "unknown": "unverifiable",
-            }
+            # Flexible mapping to handle potential schema variations
+            result = data.get("result", data) # Some routers wrap result in "result" key
             
-            scores_data = response_data.get("scores", {})
+            verdict_raw = result.get("verdict", "unknown").lower()
+            verdict_map = {"supported": "verified", "disputed": "refuted", "unknown": "unverifiable"}
+            verdict = verdict_map.get(verdict_raw, "unverifiable")
+            
+            scores_data = result.get("scores", {})
             scores = MinerScores(
-                accuracy=scores_data.get("accuracy", 0.5),
-                omission_risk=scores_data.get("omission_risk", 0.1),
-                evidence_quality=scores_data.get("evidence_quality", 0.5),
-                governance_relevance=scores_data.get("governance_relevance", 0.5),
-                composite=scores_data.get("composite", 0.5),
+                accuracy=float(scores_data.get("accuracy", 0.5)),
+                omission_risk=float(scores_data.get("omission_risk", 0.1)),
+                evidence_quality=float(scores_data.get("evidence_quality", 0.5)),
+                governance_relevance=float(scores_data.get("governance_relevance", 0.5)),
+                composite=float(scores_data.get("composite", 0.5)),
             )
             
             return MinerResponse(
-                miner_id=response_data.get("miner_id", self._miner_id),
+                miner_id=result.get("miner_id", miner_id),
                 claim_id=claim.id,
-                verdict=verdict_map.get(verdict, "unverifiable"),
-                rationale=response_data.get("rationale", ""),
-                evidence_links=response_data.get("evidence_links", []),
-                embedding=response_data.get("embedding"),
+                verdict=verdict,
+                rationale=result.get("rationale", "No rationale provided."),
+                evidence_links=result.get("evidence_links", []),
+                embedding=result.get("embedding"), # Optional
                 scores=scores,
             )
-            
         except Exception as e:
-            logger.error(f"Failed to parse Cortensor response: {e}")
-            return MinerResponse(
-                miner_id=self._miner_id,
-                claim_id=claim.id,
-                verdict="unverifiable",
-                rationale=f"Failed to parse response: {e}",
-                evidence_links=[],
-                embedding=None,
-                scores=MinerScores(
-                    accuracy=0.0,
-                    omission_risk=0.0,
-                    evidence_quality=0.0,
-                    governance_relevance=0.0,
-                    composite=0.0,
-                ),
-            )
-    
+            logger.error(f"Failed to map router response: {e}")
+            return self._create_error_response(claim, f"Response mapping error: {e}")
+
     async def close(self):
         """Close HTTP client."""
         if self.http_client:

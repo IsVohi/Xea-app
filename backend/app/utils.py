@@ -11,6 +11,12 @@ from datetime import datetime
 from typing import Any, Optional, List
 from urllib.parse import urlparse, urlunparse
 
+import httpx
+import logging
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # ID Generation
@@ -244,20 +250,71 @@ Rules:
 
 def call_llm(prompt: str) -> str:
     """
-    Call LLM with the given prompt.
+    Call Groq LLM with the given prompt.
     
-    This is a placeholder that uses a rule-based mock extractor.
-    Cursor or external LLM API can replace this implementation.
+    Uses Groq's fast inference API with llama-3.3-70b-versatile model.
+    Falls back to deterministic extraction (returns "[]") if:
+    - No API key is configured
+    - API call fails
+    - API returns error
     
     Args:
         prompt: The full prompt to send to the LLM
         
     Returns:
-        LLM response string (expected to be JSON for claim extraction)
+        LLM response string (JSON), or "[]" to trigger fallback.
     """
-    # For now, return empty response - actual extraction is done in mock_extract_claims
-    # This will be replaced by actual LLM API call
-    return "[]"
+    if not settings.groq_api_key:
+        logger.info("Groq API key not configured. Using deterministic fallback.")
+        return "[]"
+    
+    api_url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    # Groq uses OpenAI-compatible chat completions format
+    payload = {
+        "model": settings.groq_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 2048,
+        "response_format": {"type": "json_object"}
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {settings.groq_api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(api_url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract content from OpenAI-compatible response structure
+            # { "choices": [ { "message": { "content": "..." } } ] }
+            if "choices" in data and data["choices"]:
+                choice = data["choices"][0]
+                if "message" in choice and "content" in choice["message"]:
+                    return choice["message"]["content"]
+            
+            logger.warning("Groq response missing expected content structure.")
+            return "[]"
+            
+    except httpx.RequestError as e:
+        logger.error(f"Groq network error: {e}")
+        return "[]"
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Groq API error data: {e.response.text}")
+        logger.error(f"Groq HTTP error: {e}")
+        return "[]"
+    except Exception as e:
+        logger.exception(f"Unexpected error calling Groq: {e}")
+        return "[]"
 
 
 def mock_extract_claims(canonical_text: str) -> List[dict]:

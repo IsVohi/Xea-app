@@ -22,8 +22,18 @@ class Settings(BaseSettings):
     # IPFS
     ipfs_api_url: str = "http://localhost:5001"
 
-    # Cortensor / Miner routing
-    cortensor_router_url: str = ""
+    # LLM Settings (Groq)
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.3-70b-versatile"
+
+    # Cortensor Testnet Configuration
+    cortensor_network: str = "testnet0"  # "testnet0" (default) | "testnet1"
+    cortensor_router_url: str = "http://localhost:8080"
+    cortensor_api_key: str = ""
+    cortensor_session_id: str = ""
+    
+    # Deprecated / Legacy
+    use_mock_miners: bool = False
 
     # Ethereum signing
     signer_private_key: str = ""
@@ -41,14 +51,18 @@ class Settings(BaseSettings):
     
     # Mock miner settings (for local development)
     mock_miner_url: str = "http://localhost:8001"
-    use_mock_miners: bool = True
+    # Duplicate removed; strictly use the one defined earlier or here. 
+    # Let's ensure strict mode is verified.
     
     # Data directories
     data_dir: str = "/data"
 
     class Config:
-        env_file = ".env"
+        # Resolve .env file from project root: Xea/.env
+        # Xea/backend/app/config.py -> ../../../.env
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 @lru_cache()

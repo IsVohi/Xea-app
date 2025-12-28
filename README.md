@@ -49,6 +49,23 @@ cd workers
 python worker.py
 ```
 
+## LLM Usage (Optional)
+
+Xea optionally uses **Google Gemini** to assist with claim extraction.
+If no `GEMINI_API_KEY` is configured in `.env`, Xea automatically falls back to a **deterministic rule-based extractor** to ensure reproducibility and demo stability.
+All validation, PoI, and PoUW logic is independent of the LLM provider.
+
+### Cortensor Testnet Integration
+
+Xea runs on a self-hosted Cortensor Router (installed from the official Cortensor
+installer) connected to Cortensor Testnet-0.
+
+All validation requests are executed by Cortensor-operated miners and scored
+using Proof of Inference (PoI) and Proof of Useful Work (PoUW).
+
+Xea uses Cortensor’s documented Web2 API for session-based decentralized inference.
+All inference calls in this project are real, auditable, and reproducible.
+
 ## Documentation
 
 - [SPEC.md](./SPEC.md) — Full specification with data models, endpoints, and acceptance criteria

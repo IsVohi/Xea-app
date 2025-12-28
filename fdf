@@ -1,0 +1,90 @@
+#===============================================================================
+# Cortensor Node Configuration
+#===============================================================================
+
+# -------------------------------
+# Blockchain / Network
+# -------------------------------
+HOST=https://rpc.ankr.com/arbitrum_sepolia/f5f53d9133bbdf13a41ee88d81839470dc49d50dac0d7cf42e14f0045b98630c
+CHAINID=421614
+NETWORK=testnet
+
+# -------------------------------
+# Runtime Contracts (Testnet-0)
+# -------------------------------
+CONTRACT_ADDRESS_RUNTIME="0xa438cE917a5740267e0f7217f81cbbAA23E7e106"
+CONTRACT_ADDRESS_IAM="0x146834e5b45832769D8e8Fd0869AD1CEbdF150bD"
+CONTRACT_ADDRESS_COGNITIVEV0="0x7DEe590Cb7B329e6454Ac78be4213d2D96FF195b"
+CONTRACT_ADDRESS_NODESTATS="0x593EE6FBb0f7eFbaD8aE17d758878660158af788"
+CONTRACT_ADDRESS_NODEREPUTATION="0xe62F741249C1eE21E053dac8aC3a7BD66Dc9c773"
+CONTRACT_ADDRESS_NODEPOOL="0xFF489a46eeD2733dAa3bEa1e397E8b4ac97C1bb0"
+CONTRACT_ADDRESS_ACL="0x6Dbc02BD4adbb34caeFb081fe60eDC41e393521B"
+
+# -------------------------------
+# Node Wallet (TESTNET ONLY)
+# -------------------------------
+
+
+# Network
+HOST=https://rpc.ankr.com/arbitrum_sepolia
+CHAINID=421614
+NETWORK=testnet
+
+# Wallet
+
+
+# API
+API_ENABLE=true
+API_PORT=5010
+API_KEY=test
+API_TOKEN=test
+
+--
+
+# ===============================
+# Cortensor Router – Minimal Safe Config
+# ===============================
+
+# Network
+HOST=https://rpc.ankr.com/arbitrum_sepolia
+CHAINID=421614
+NETWORK=testnet
+
+# Wallet (Arbitrum Sepolia)
+NODE_PUBLIC_KEY=0x754EB84b2fd426b57afd89a878eF1c6a4D91cd40
+NODE_PRIVATE_KEY=0x7c4496c01eff01ec3fb357f465d29e134b91c9b38228ee398d702bff8f0888f8
+
+# API
+API_ENABLE=1
+API_PORT=5010
+API_KEY=test
+API_TOKEN=test
+
+# Router role (CRITICAL)
+AGENT_ROLE=router
+
+# Disable EVERYTHING else
+ENABLE_DEDICATED_NODE=0
+ENABLE_LLM_GATEWAY=0
+DOCKER_LLM_MANAGER=0
+AGENT_MINER_DOCKER_LLM=0
+LLM_MEMORY_INDEX_DYNAMIC_LOADING=0
+ENABLE_TX_QUEUE_MODE=0
+ENABLE_INFERENCE_QUEUE_MODE=0
+
+
+cat > ~/.cortensor/.env << 'EOF'
+HOST=https://rpc.ankr.com/arbitrum_sepolia
+CHAINID=421614
+NETWORK=testnet
+
+NODE_PUBLIC_KEY=0x754EB84b2fd426b57afd89a878eF1c6a4D91cd40
+NODE_PRIVATE_KEY=0x7c4496c01eff01ec3fb357f465d29e134b91c9b38228ee398d702bff8f0888f8
+
+API_ENABLE=1
+API_PORT=5010
+API_KEY=test
+API_TOKEN=test
+
+AGENT_ROLE=router
+EOF

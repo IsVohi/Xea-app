@@ -1,0 +1,307 @@
+#===============================================================================
+# Cortensor Node Configuration
+#===============================================================================
+# This is the configuration file for Cortensor Node
+# Website: https://cortensor.network
+# Discord: https://discord.gg/cortensor
+# GitHub: https://github.com/cortensor
+#
+# IMPORTANT: This is an example configuration file.
+# Make a copy of this file as '.env' and modify the values as needed.
+#===============================================================================
+
+#===============================================================================
+# BLOCKCHAIN CONFIGURATION
+#===============================================================================
+
+# RPC Endpoints
+#-------------------------------------------------------------------------------
+# Arbitrum Sepolia RPC endpoint for testnet
+HOST= https://sepolia-arb-rpc.agnc.my.id/
+CHAINID=421614
+
+# Ethereum Mainnet RPC endpoint (for reference operations)
+HOST_MAINNET=https://rpc.ankr.com/eth/0f4eb65057313c39f6fb51be08f77d42041a2ce92018518c5e02a8358029b4a0
+
+# Smart Contract Addresses
+# DevNet 2
+# CONTRACT_ADDRESS_RUNTIME="0xC0e4E569810a445d097CBB20e25775701f41A8cc"
+# DevNet 3
+# CONTRACT_ADDRESS_RUNTIME="0x5889b0E1620f133eFB93fab890543569DE846365"
+# DevNet 4
+# CONTRACT_ADDRESS_RUNTIME="0x7bDF2244a3Cc65335176d7e546Cc99B9316a912a"
+# DevNet 5
+# CONTRACT_ADDRESS_RUNTIME="0x8361E7821bDAD7F8F0aC7862Bebb190B8Da1A160"
+# DevNet 6
+# CONTRACT_ADDRESS_RUNTIME="0x2ACb5EE389B06250cC40593edbCc6eF3b9cEC8c7"
+#-------------------------------------------------------------------------------
+# Testnet0 (Current)
+CONTRACT_ADDRESS_RUNTIME="0xa438cE917a5740267e0f7217f81cbbAA23E7e106"
+CONTRACT_ADDRESS_IAM="0x146834e5b45832769D8e8Fd0869AD1CEbdF150bD"
+CONTRACT_ADDRESS_COGNITIVEV0="0x7DEe590Cb7B329e6454Ac78be4213d2D96FF195b"
+CONTRACT_ADDRESS_NODESTATS="0x593EE6FBb0f7eFbaD8aE17d758878660158af788"
+CONTRACT_ADDRESS_NODEREPUTATION="0xe62F741249C1eE21E053dac8aC3a7BD66Dc9c773"
+CONTRACT_ADDRESS_NODEPOOL="0xFF489a46eeD2733dAa3bEa1e397E8b4ac97C1bb0"
+CONTRACT_ADDRESS_ACL="0x6Dbc02BD4adbb34caeFb081fe60eDC41e393521B"
+
+# Node Wallet Configuration
+#-------------------------------------------------------------------------------
+# IMPORTANT: Replace with your actual wallet address and private key
+# NEVER share your private key or commit it to version control
+NODE_PUBLIC_KEY=xxxx
+NODE_PRIVATE_KEY=xxxx
+
+#===============================================================================
+# NETWORK CONFIGURATION
+#===============================================================================
+
+# WebSocket Configuration
+#-------------------------------------------------------------------------------
+# Router WebSocket endpoints for node communication
+# Enable API
+API_ENABLE=1
+
+# Generate a unique API key
+API_KEY=xxxxxxxx-005e-4a38-aa97-xxxxxxxxxxxxx
+
+# Set your API port
+API_PORT=5010
+
+# Router External IP and Port for Miner Communication
+# Used for external access to the router
+ROUTER_EXTERNAL_IP="xxxxxxx"
+ROUTER_EXTERNAL_PORT="9001"
+
+# Router REST Bind IP and Port for Client Communication
+# Reverse proxy to this IP and port
+ROUTER_REST_BIND_IP="xxxxxxxx"
+ROUTER_REST_BIND_PORT="5010"
+
+WS_HOST_ROUTER="xxxxxxxxxx"
+WS_PORT_ROUTER="9001"
+AGENT_WS_HOST_ROUTER="xxxxxxxxxx"
+AGENT_WS_PORT_ROUTER="9001"
+
+#===============================================================================
+# LLM ENGINE CONFIGURATION
+#===============================================================================
+
+# LLM Server Configuration
+#-------------------------------------------------------------------------------
+LLM_HOST="127.0.0.1"
+LLM_PORT="8090"
+
+# Memory Management
+#-------------------------------------------------------------------------------
+# Set to 1 to lock the model in memory for better performance
+LLM_OPTION_MLOCK=1
+
+# Context and Batch Configuration
+#-------------------------------------------------------------------------------
+# LLM / LLAMA Context Size
+# Single Docker LLM Mode
+LLM_OPTION_CONTEXT_SIZE=512
+
+# LLM / LLAMA Batch Size
+# Single Docker LLM Mode
+LLM_OPTION_BATCH_SIZE=512
+
+# GPU Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to enable GPU acceleration for the LLM
+LLM_OPTION_GPU=0
+# Threshold for GPU layers (-1 for auto)
+# Single Docker LLM Mode
+LLM_OPTION_GPU_THRESHOLD=-1
+
+# Model-specific GPU thresholds (0-11) - Override general GPU threshold for specific models
+# Only used when LLM_MEMORY_INDEX_DYNAMIC_LOADING=1 or worker manager is enabled
+# -1 for auto, 0 to disable GPU for that model, positive number for specific threshold
+# llava-v1.5-7b-q4
+LLM_OPTION_MODEL_GPU_THRESHOLD_0=-1
+# DeepSeek-R1-Distill-Llama-8B-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_1=-1
+# Meta-Llama-3.1-8B-Instruct.Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_2=-1
+# Qwen_QwQ-32B-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_3=-1
+# Mistral-7B-Instruct-v0.3.Q4_0
+LLM_OPTION_MODEL_GPU_THRESHOLD_4=-1
+# granite-3.2-8b-instruct-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_5=-1
+# Qwen2.5-7B-Instruct-1M-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_6=-1
+# google_gemma-3-4b-it-Q6_K
+LLM_OPTION_MODEL_GPU_THRESHOLD_7=-1
+# Qwen_Qwen3-4B-Q8_0
+LLM_OPTION_MODEL_GPU_THRESHOLD_8=-1
+# google_gemma-3-12b-it-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_9=-1
+# DeepSeek-R1-Distill-Qwen-14B-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_10=-1
+# Qwen2.5-Coder-14B-Instruct-Q4_K_M
+LLM_OPTION_MODEL_GPU_THRESHOLD_11=-1
+
+# CPU Configuration
+#-------------------------------------------------------------------------------
+# Number of CPU threads to use (-1 for auto)
+# 99999 for maximum
+LLM_OPTION_CPU_THREADS=-1
+
+# Docker GPU Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to enable GPU support in Docker container
+LLM_GPU_CONTAINER=0
+# Specify GPU device IDs to use (e.g., "0,1" or leave empty for all available GPUs)
+LLM_GPU_CONTAINER_DEVICE_IDS=""
+
+#===============================================================================
+# NODE OPERATION CONFIGURATION
+#===============================================================================
+
+# Logging
+#-------------------------------------------------------------------------------
+LOG_FILE_NAME="agent_miner.log"
+
+# Debug/Development Mode
+#-------------------------------------------------------------------------------
+# Set to 1 to enable debug print statements
+DEV_MODE_ENABLE_DEBUG_PRINT=1
+
+# Environment Override
+#-------------------------------------------------------------------------------
+# Uncomment to override global environment file
+# OVERRIDE_GLOBAL_ENV_FILE=path/to/env/file
+
+# IPFS Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to enable IPFS in Docker
+DOCKER_IPFS=0 # Not used
+
+# Set to 1 to enable IPFS server, 0 to disable
+ENABLE_IPFS_SERVER=0
+
+# LLM Docker Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to use Docker for LLM
+AGENT_MINER_DOCKER_LLM=1    # Not used
+# Set to 1 to automatically start LLM Docker container
+AGENT_MINER_DOCKER_LLM_START=1    # Not used
+# Custom container image for LLM (only used with ENABLE_DEDICATED_NODE=1)
+# Available models for dedicated nodes:
+# - DeepSeek-R1-Distill-Llama-8B-Q4_K_M
+# - Meta-Llama-3.1-8B-Instruct.Q4_K_M
+# - Qwen_QwQ-32B-Q4_K_M
+# - Mistral-7B-Instruct-v0.3.Q4_0
+# - granite-3.2-8b-instruct-Q4_K_M
+# - Qwen2.5-7B-Instruct-1M-Q4_K_M
+# - google_gemma-3-4b-it-Q6_K
+# - Qwen_Qwen3-4B-Q8_0
+# - google_gemma-3-12b-it-Q4_K_M
+# - DeepSeek-R1-Distill-Qwen-14B-Q4_K_M
+# - Qwen2.5-Coder-14B-Instruct-Q4_K_M
+LLM_CONTAINER_IMAGE=""
+
+# Subprocess model for LLM (only used when Docker is not used and ENABLE_DEDICATED_NODE=0)
+# Available models:
+# - KEY: Model Info
+# 0 - default: llava-v1.5-7b-q4
+#   - default-gpu: llava-v1.5-7b-q4
+# 1 - DeepSeek-R1-Distill-Llama-8B-Q4_K_M: DeepSeek R1 Distill Llama 8B Q4_K_M
+# 2 - Meta-Llama-3.1-8B-Instruct.Q4_K_M: Meta Llama 3.1 8B Instruct Q4_K_M
+# 3 - Qwen_QwQ-32B-Q4_K_M: Qwen QwQ 32B Q4_K_M
+# 4 - Mistral-7B-Instruct-v0.3.Q4_0: Mistral 7B Instruct v0.3 Q4_0
+# 5 - granite-3.2-8b-instruct-Q4_K_M: Granite 3.2 8B Instruct Q4_K_M
+# 6 - Qwen2.5-7B-Instruct-1M-Q4_K_M: Qwen 2.5 7B Instruct 1M Q4_K_M
+# 7 - google_gemma-3-4b-it-Q6_K: Google Gemma 3 4B Q6_K
+# 8 - Qwen_Qwen3-4B-Q8_0: Qwen Qwen3 4B Q8_0
+# 9 - google_gemma-3-12b-it-Q4_K_M: Google Gemma 3 12B Q4_K_M
+# 10 - DeepSeek-R1-Distill-Qwen-14B-Q4_K_M: DeepSeek R1 Distill Qwen 14B Q4_K_M
+# 11 - Qwen2.5-Coder-14B-Instruct-Q4_K_M: Qwen 2.5 Coder 14B Instruct Q4_K_M
+LLM_SUBPROCESS_MODEL=""
+
+# Dynamic Model Loading Configuration
+#-------------------------------------------------------------------------------
+# For Dynamic Model Loading, threshold of loading eligible models number in percentage
+# Default is 100% which means if there are 10 eligible models, all 10 will be loaded
+# 50% means if there are 10 eligible models, only 5 will be loaded
+# 80% means if there are 10 eligible models, 8 will be loaded
+LLM_MEMORY_INDEX_DYNAMIC_LOADING_THRESHOLD=100
+
+# For Dynamic Model Loading, exclude model indexes
+# Comma separated list of model indexes to exclude from dynamic loading
+# Example: "6,9" excludes model indexes 6 and 9 from being loaded
+LLM_MEMORY_INDEX_DYNAMIC_LOADING_EXCLUDE_MODEL_INDEXES=""
+
+# Agent Role Configuration
+#-------------------------------------------------------------------------------
+# Role of this node in the network
+AGENT_ROLE=minerv1    # Not used
+
+# Dedicated Node Configuration
+#-------------------------------------------------------------------------------
+# Set to 0 to run as an ephemeral node, 1 for dedicated node
+ENABLE_DEDICATED_NODE=0
+# Comma-separated list of session IDs this node is authorized to serve
+# Example: "0,1,2,3,4,5"
+DEDICATED_NODE_AUTHORIZED_SESSIONS=""
+
+# Queue Mode Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 (default) to enable transaction queue mode for router nodes, 0 to disable
+ENABLE_TX_QUEUE_MODE=1
+# Set to 0 (default) to disable inference queue mode for miner nodes, 1 to enable
+ENABLE_INFERENCE_QUEUE_MODE=0
+# Set to 0 (default) to use blocking stream queue mode, 1 to enable non-blocking mode
+ENABLE_STREAM_QUEUE_NON_BLOCKING=0
+
+# Docker Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to enable Docker LLM Manager for handling multiple LLM containers, 0 to use single container mode
+DOCKER_LLM_MANAGER=1
+
+# LLM Worker Configuration
+#-------------------------------------------------------------------------------
+# Base port for LLM worker instances
+LLM_WORKER_BASE_PORT=8090
+
+# Port prefix for LLM worker instances (used for port assignment)
+LLM_WORKER_PORT_PREFIX=0
+
+# Container name prefix for LLM worker instances (for identification)
+LLM_WORKER_CONTAINER_NAME_PREFIX=""
+
+# LLM Memory Index Dynamic Loading
+#-------------------------------------------------------------------------------
+# Set to 1 to enable dynamic loading of memory indexes for LLM
+LLM_MEMORY_INDEX_DYNAMIC_LOADING=1
+
+# LLM Memory Index Buffer Percentage
+# Percentage of additional memory buffer to add to model size calculations (default: 20%)
+LLM_MEMORY_INDEX_BUFFER_PERCENTAGE=20
+
+# LLM Gateway Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to enable LLM Gateway enforcement, 0 to disable
+ENABLE_LLM_GATEWAY=0
+
+# Base port for LLM Gateway worker instances
+LLM_GATEWAY_WORKER_BASE_PORT=18888
+
+# LLM startup timing configuration
+#-------------------------------------------------------------------------------
+# Wait time in seconds when starting LLM containers
+LLM_START_WAIT_SECONDS=10
+
+# Additional wait time in seconds for GPU-enabled containers
+LLM_START_WAIT_SECONDS_ADDITIONAL_FOR_GPU=5
+
+# Polling Intervals
+#-------------------------------------------------------------------------------
+# Interval in seconds for checking new network tasks
+MINER_PULLING_INTERVAL_SECONDS=5
+
+# L3 Configuration
+#-------------------------------------------------------------------------------
+# Set to 1 to run as an L3 node, 0 for L2
+IS_L3=0

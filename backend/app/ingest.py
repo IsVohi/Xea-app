@@ -227,23 +227,41 @@ def extract_claims_llm(canonical_text: str) -> List[Claim]:
         llm_response = call_llm(full_prompt)
         if llm_response and llm_response.strip() != "[]":
             # Parse LLM response
-            claims_data = json.loads(llm_response)
-            claims = []
-            for claim_dict in claims_data:
-                canonical = ClaimCanonical(
-                    numbers=claim_dict.get("canonical", {}).get("numbers", []),
-                    addresses=claim_dict.get("canonical", {}).get("addresses", []),
-                    urls=claim_dict.get("canonical", {}).get("urls", []),
-                )
-                claims.append(Claim(
-                    id=claim_dict["id"],
-                    text=claim_dict["text"],
-                    paragraph_index=claim_dict["paragraph_index"],
-                    char_range=claim_dict["char_range"],
-                    type=claim_dict["type"],
-                    canonical=canonical,
-                ))
-            return claims
+            parsed = json.loads(llm_response)
+            
+            # Handle different response formats:
+            # 1. Direct array: [{"id": "c1", ...}, ...]
+            # 2. Wrapped in object: {"claims": [{"id": "c1", ...}, ...]}
+            if isinstance(parsed, list):
+                claims_data = parsed
+            elif isinstance(parsed, dict):
+                # Try common keys that LLMs might use
+                claims_data = parsed.get("claims") or parsed.get("extracted_claims") or parsed.get("data") or []
+                if not claims_data and len(parsed) == 1:
+                    # If only one key, use its value if it's a list
+                    first_val = list(parsed.values())[0]
+                    if isinstance(first_val, list):
+                        claims_data = first_val
+            else:
+                claims_data = []
+            
+            if claims_data:
+                claims = []
+                for claim_dict in claims_data:
+                    canonical = ClaimCanonical(
+                        numbers=claim_dict.get("canonical", {}).get("numbers", []),
+                        addresses=claim_dict.get("canonical", {}).get("addresses", []),
+                        urls=claim_dict.get("canonical", {}).get("urls", []),
+                    )
+                    claims.append(Claim(
+                        id=claim_dict["id"],
+                        text=claim_dict["text"],
+                        paragraph_index=claim_dict["paragraph_index"],
+                        char_range=claim_dict["char_range"],
+                        type=claim_dict["type"],
+                        canonical=canonical,
+                    ))
+                return claims
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
     
@@ -325,11 +343,18 @@ async def process_ingest(request: IngestRequest) -> IngestResponse:
     Process an ingest request.
     
     Args:
-        request: IngestRequest with url or text
+        request: IngestRequest with url or text, optionally previous_proposal_id
         
     Returns:
-        IngestResponse with hash, canonical text, and claims
+        IngestResponse with hash, canonical text, claims, and versioning info
     """
+    from app.versioning import (
+        create_proposal_version,
+        get_latest_version,
+        compute_claim_diff,
+        generate_proposal_id,
+    )
+    
     # Get raw text from URL or direct input
     if request.url:
         raw_text = await fetch_proposal_from_url(request.url)
@@ -347,11 +372,61 @@ async def process_ingest(request: IngestRequest) -> IngestResponse:
     # Extract claims
     claims = extract_claims_llm(canonical_text)
     
-    # Persist to disk
+    # Persist to disk (legacy)
     persist_claims(proposal_hash, claims, canonical_text)
     
+    # Versioning logic
+    claim_diff = None
+    previous_hash = None
+    
+    if request.previous_proposal_id:
+        # Updating existing proposal
+        prev_result = get_latest_version(request.previous_proposal_id)
+        
+        if prev_result:
+            prev_version, prev_claims = prev_result
+            previous_hash = prev_version.proposal_hash
+            
+            # Compute diff between versions
+            claim_diff = compute_claim_diff(prev_claims, claims)
+            
+            # Create new version
+            version = create_proposal_version(
+                proposal_id=request.previous_proposal_id,
+                proposal_hash=proposal_hash,
+                claims=claims,
+                canonical_text=canonical_text,
+                previous_hash=previous_hash,
+            )
+            proposal_id = version.proposal_id
+            version_number = version.version_number
+        else:
+            # Previous not found, treat as new proposal
+            version = create_proposal_version(
+                proposal_id=request.previous_proposal_id,  # Use provided ID
+                proposal_hash=proposal_hash,
+                claims=claims,
+                canonical_text=canonical_text,
+            )
+            proposal_id = version.proposal_id
+            version_number = version.version_number
+    else:
+        # New proposal
+        version = create_proposal_version(
+            proposal_id=None,  # Generate new ID
+            proposal_hash=proposal_hash,
+            claims=claims,
+            canonical_text=canonical_text,
+        )
+        proposal_id = version.proposal_id
+        version_number = version.version_number
+    
     return IngestResponse(
+        proposal_id=proposal_id,
+        version_number=version_number,
         proposal_hash=proposal_hash,
+        previous_hash=previous_hash,
         canonical_text=canonical_text,
         claims=claims,
+        claim_diff=claim_diff,
     )

@@ -26,14 +26,101 @@ from app.schemas import (
     ClaimsEditRequest,
     MinerResponse,
     MinerScores,
+    ProposalVersion,
+    ProposalHistory,
 )
 from app.ingest import process_ingest, load_claims, persist_claims, get_data_dir
 from app.utils import generate_job_id
 from app.workers import job_state, validate_claims_job
 from app.aggregator import aggregate_job, load_evidence_bundle
 from app.attest import create_attestation as attest_create_attestation
+from app import history_service
 
 router = APIRouter()
+
+
+# ============================================================================
+# History Endpoints
+# ============================================================================
+
+@router.get("/history")
+async def get_validation_history(limit: int = 50, offset: int = 0):
+    """
+    Get validation history list.
+    
+    Args:
+        limit: Maximum number of items to return (default 50)
+        offset: Offset for pagination (default 0)
+    
+    Returns:
+        List of history items
+    """
+    return history_service.get_history(limit=limit, offset=offset)
+
+
+@router.get("/history/recent")
+async def get_recent_history(limit: int = 3):
+    """
+    Get most recent history items for home page display.
+    
+    Args:
+        limit: Maximum number of items to return (default 3)
+    
+    Returns:
+        List of recent history items
+    """
+    return history_service.get_recent_history(limit=limit)
+
+
+@router.get("/history/{job_id}")
+async def get_history_item(job_id: str):
+    """
+    Get a specific history item by job ID.
+    
+    Args:
+        job_id: The job ID to look up
+    
+    Returns:
+        History item with full details including evidence
+    """
+    item = history_service.get_history_by_job_id(job_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="History item not found")
+    return item
+
+
+@router.post("/history")
+async def save_history_item(
+    job_id: str,
+    proposal_hash: str,
+    proposal_id: Optional[str] = None,
+    version_number: int = 1,
+    proposal_title: Optional[str] = None,
+    claims_count: int = 0,
+    status: str = "pending",
+    overall_verdict: Optional[str] = None,
+    confidence_score: Optional[float] = None,
+    ipfs_cid: Optional[str] = None,
+    network_used: Optional[str] = None,
+):
+    """
+    Save or update a history item.
+    Called by frontend after validation completes.
+    """
+    history_service.save_history(
+        job_id=job_id,
+        proposal_id=proposal_id,
+        version_number=version_number,
+        proposal_hash=proposal_hash,
+        proposal_title=proposal_title,
+        claims_count=claims_count,
+        status=status,
+        overall_verdict=overall_verdict,
+        confidence_score=confidence_score,
+        ipfs_cid=ipfs_cid,
+        network_used=network_used,
+    )
+    return {"status": "saved"}
 
 
 # ============================================================================
@@ -55,6 +142,22 @@ async def ingest_proposal(request: IngestRequest) -> IngestResponse:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@router.get("/proposal/{proposal_id}/history", response_model=ProposalHistory)
+async def get_proposal_history(proposal_id: str) -> ProposalHistory:
+    """
+    Get version history for a proposal.
+    
+    Returns list of all versions with their hashes and timestamps.
+    """
+    from app.versioning import get_proposal_history as fetch_history
+    
+    history = fetch_history(proposal_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    
+    return history
 
 
 @router.get("/claims/{proposal_hash}")
@@ -277,6 +380,11 @@ async def get_job_status(job_id: str) -> StatusResponse:
         updated_at=updated_at,
         completed_at=completed_at,
         ready_for_aggregation=ready_for_aggregation,
+        # Stage tracking (NEW)
+        current_stage=job_data.get("current_stage", "received"),
+        retries_attempted=job_data.get("retries_attempted", 0),
+        last_heartbeat=job_data.get("last_heartbeat"),
+        quorum_target=job_data.get("quorum_target", 3),
     )
 
 
@@ -329,15 +437,126 @@ async def aggregate_results(request: AggregateRequest) -> AggregateResponse:
 
 
 @router.get("/evidence/{job_id}")
-async def get_evidence_bundle(job_id: str):
+async def get_evidence_bundle(job_id: str, view: Optional[str] = None):
     """
     Get a saved evidence bundle by job ID.
+    
+    Query Parameters:
+        view: Optional role-based view (voter, delegate, auditor)
+              - voter: Risk badge, recommendation, key flags
+              - delegate: Claim breakdown, disagreement indicators
+              - auditor: Full evidence bundle (default)
     """
+    from app.views import transform_evidence_for_role, validate_role, ViewRole
+    from app.rubrics import get_rubric
+    
     bundle = load_evidence_bundle(job_id)
     if not bundle:
         raise HTTPException(status_code=404, detail="Evidence bundle not found")
     
-    return bundle
+    # If no view specified, return full bundle
+    if not view:
+        return bundle
+    
+    # Validate and transform to requested view
+    try:
+        role = validate_role(view)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Get rubric if referenced in bundle
+    rubric = None
+    if bundle.get("rubric_id"):
+        rubric = get_rubric(bundle["rubric_id"], bundle.get("rubric_version"))
+    
+    return transform_evidence_for_role(bundle, role, rubric)
+
+
+# ============================================================================
+# DAO & Rubric Endpoints
+# ============================================================================
+
+from app.schemas import (
+    DAO,
+    DAORegisterRequest,
+    Rubric,
+    RubricCreateRequest,
+)
+
+
+@router.post("/dao/register", response_model=DAO)
+async def register_dao_endpoint(request: DAORegisterRequest) -> DAO:
+    """
+    Register a new DAO.
+    
+    DAOs can define custom rubrics for PoUW scoring.
+    """
+    from app.rubrics import register_dao
+    
+    try:
+        dao = register_dao(request)
+        return dao
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/dao/{dao_id}", response_model=DAO)
+async def get_dao_endpoint(dao_id: str) -> DAO:
+    """Get a DAO by ID."""
+    from app.rubrics import get_dao
+    
+    dao = get_dao(dao_id)
+    if not dao:
+        raise HTTPException(status_code=404, detail="DAO not found")
+    
+    return dao
+
+
+@router.post("/rubric/create", response_model=Rubric)
+async def create_rubric_endpoint(request: RubricCreateRequest) -> Rubric:
+    """
+    Create a new PoUW rubric for a DAO.
+    
+    Rubrics define custom weights for accuracy, omission_risk,
+    evidence_quality, and governance_relevance. Once used in
+    evidence, rubrics become immutable.
+    """
+    from app.rubrics import create_rubric
+    
+    try:
+        rubric = create_rubric(request)
+        return rubric
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/rubric/{rubric_id}", response_model=Rubric)
+async def get_rubric_endpoint(rubric_id: str, version: Optional[int] = None) -> Rubric:
+    """
+    Get a rubric by ID.
+    
+    Query Parameters:
+        version: Specific version number, or latest if omitted
+    """
+    from app.rubrics import get_rubric
+    
+    rubric = get_rubric(rubric_id, version)
+    if not rubric:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+    
+    return rubric
+
+
+@router.get("/dao/{dao_id}/rubrics", response_model=List[Rubric])
+async def list_dao_rubrics(dao_id: str) -> List[Rubric]:
+    """List all rubrics for a DAO."""
+    from app.rubrics import list_rubrics, get_dao
+    
+    dao = get_dao(dao_id)
+    if not dao:
+        raise HTTPException(status_code=404, detail="DAO not found")
+    
+    return list_rubrics(dao_id)
 
 
 # ============================================================================
