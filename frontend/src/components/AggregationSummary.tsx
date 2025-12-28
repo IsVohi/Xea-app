@@ -1,4 +1,4 @@
-import React from 'react';
+// React import removed as unused
 import { EvidenceBundle, ClaimAggregation } from '../api';
 import { PoITooltip, PoUWTooltip } from './Tooltip';
 

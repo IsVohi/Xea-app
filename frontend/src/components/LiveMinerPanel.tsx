@@ -23,9 +23,7 @@ export function LiveMinerPanel({
     retriesAttempted,
     lastHeartbeat,
 }: LiveMinerPanelProps) {
-    const progressPercent = progress.miners_contacted > 0
-        ? (progress.miners_responded / progress.miners_contacted) * 100
-        : 0;
+    // progressPercent removed as unused
 
     const getVerdictColor = (verdict: string) => {
         switch (verdict) {
