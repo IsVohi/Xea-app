@@ -20,7 +20,7 @@ asyncpg>=0.28.0
 redis>=5.0.0
 
 # IPFS
-ipfshttpclient>=0.8.0
+ipfshttpclient
 
 # Crypto
 eth-account>=0.10.0
